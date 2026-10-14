@@ -48,6 +48,7 @@
       sort: 'newest',
       sheet: 'half',           // results sheet snap: collapsed | half | expanded
       pan: { x: 0, y: 0 },     // map offset that keeps a selected marker in view (static image)
+      mapScale: 1,             // map zoom (1 = handoff scale); < 1 only when the search circle wouldn't fit
       draft: null,             // sheet draft (price / filters), discarded on Close
       selectedListingId: null, // map selection
       cluster: null,           // open map cluster (key)
@@ -163,30 +164,52 @@
     </nav>`;
   }
 
-  // Map world: the supplied metro image at the shared scale, centred on the search location. Markers live inside
-  // the world, so they stay anchored to the map when it is re-framed, panned or resized.
-  function worldTops() {
-    const c = loc().px;
-    const dy = ((898 - c[1]) * PX).toFixed(2);
-    return { list: `calc(var(--top) - 59px - 208.65px + ${dy}px)`, map: `calc(var(--top) - 59px - 78.65px + ${dy}px)` };
-  }
+  // Map world: the supplied metro image at the shared scale (0.5104 pt per image px), centred on the search
+  // location. The search-radius circle and markers live inside the world, so they stay anchored to the map when
+  // it is re-framed, zoomed to fit, panned or resized. Circle size = proximity × 11.67 pt per mile (F4).
   function mapBg(opts = {}) {
     const c = loc().px;
     const r = state.radius * D.PX_PER_MILE * PX;
-    const t = worldTops();
-    // Home at the default location keeps its drawn overlay (S01), except while the map is in use.
-    const homeDrawn = opts.home && state.location === HOME_LOC && state.radius === HOME_RADIUS;
-    const radius = `${homeDrawn ? `<img class="map-radius is-home" src="assets/map/search-radius-home.svg" alt="">` : ''}
-      <span class="map-circle ${homeDrawn ? 'is-home-alt' : ''}" style="left:${(c[0] * PX - r).toFixed(2)}px;top:${(c[1] * PX - r).toFixed(2)}px;width:${(2 * r).toFixed(2)}px;height:${(2 * r).toFixed(2)}px"></span>
-      <img class="map-center ${homeDrawn ? 'is-home-alt' : ''}" src="assets/map/search-center.svg" alt="" style="left:${(c[0] * PX - 9).toFixed(2)}px;top:${(c[1] * PX - 9).toFixed(2)}px">`;
+    const cx = c[0] * PX, cy = c[1] * PX;
     return `<div class="map-bg ${opts.home ? 'is-home' : ''}" data-action="map-bg">
-      <div class="map-world" style="left:calc(50% - ${(c[0] * PX).toFixed(2)}px);--top-list:${t.list};--top-map:${t.map};--pan-x:${state.pan.x}px;--pan-y:${state.pan.y}px">
+      <div class="map-world" style="left:calc(50% - ${cx.toFixed(2)}px);top:calc(var(--top) - 59px - 208.65px + ${((898 - c[1]) * PX).toFixed(2)}px);transform-origin:${cx.toFixed(2)}px ${cy.toFixed(2)}px;--pan-x:${state.pan.x}px;--pan-y:${state.pan.y}px;--s:${state.mapScale};--inv:${(1 / state.mapScale).toFixed(4)}">
         <img class="map-img" src="assets/map/metro-map.png" alt="">
-        ${radius}
-        <div class="markers" role="group" aria-label="Listing markers">${opts.markers || ''}</div>
+        <svg class="map-circle" aria-hidden="true" width="${(2 * r).toFixed(2)}" height="${(2 * r).toFixed(2)}" viewBox="0 0 ${(2 * r).toFixed(2)} ${(2 * r).toFixed(2)}" style="left:${(cx - r).toFixed(2)}px;top:${(cy - r).toFixed(2)}px"><circle cx="${r.toFixed(2)}" cy="${r.toFixed(2)}" r="${r.toFixed(2)}"/></svg>
+        <img class="map-center" src="assets/map/search-center.svg" alt="" style="left:${(cx - 9).toFixed(2)}px;top:${(cy - 9).toFixed(2)}px">
+        <div class="markers" role="group" aria-label="Listing markers" data-scale="${state.mapScale}">${opts.markers || ''}</div>
       </div>
     </div>
     <div class="map-edge"></div>`;
+  }
+
+  // Map framing per sheet position. The handoff scale is kept whenever the search circle fits the visible map
+  // (M1 collapsed at 25 mi). When it doesn't (half sheet, or 50 mi), the map zooms out just enough to fit the
+  // circle's height, never below 60 % so labels stay readable. Markers keep their size.
+  function mapFrame(snap = state.sheet) {
+    const { top } = insets();
+    const tops = snapTops({ withPreview: false }); // framing ignores the preview, so M1 and M2 share one map
+    const sheetTop = tops[snap === 'expanded' ? 'half' : snap];
+    const regionTop = top + 52, regionBottom = sheetTop - 8;      // below the filter row, above the sheet
+    const r = state.radius * D.PX_PER_MILE * PX;
+    const s = Math.min(1, Math.max(0.6, (regionBottom - regionTop - 16) / (2 * r)));
+    const m1 = top + 320.67;                                        // M1 centre (55401 at 379.7 pt on 932)
+    const fitsM1 = snap === 'collapsed' && s === 1 && m1 - r >= regionTop - 40 && m1 + r <= regionBottom + 8;
+    const cy = fitsM1 ? m1 : Math.round((regionTop + regionBottom) / 2);
+    return { s: +s.toFixed(4), cy };
+  }
+  function applyMapFrame() {
+    const w = $('.map-world');
+    if (!w || !isDiscovery()) return;
+    const f = mapFrame();
+    const c = loc().px;
+    w.style.top = (f.cy - c[1] * PX).toFixed(2) + 'px';
+    w.style.setProperty('--s', f.s);
+    w.style.setProperty('--inv', (1 / f.s).toFixed(4));
+    const mk = w.querySelector('.markers');
+    if (f.s !== state.mapScale || (mk && +mk.dataset.scale !== f.s)) {
+      state.mapScale = f.s;                // clusters are measured on screen, so regroup at the new zoom
+      if (mk) { mk.innerHTML = markers(compute()); mk.dataset.scale = f.s; }
+    }
   }
 
   function pillPlain(label, { tag = false, action, fid, aria }) {
@@ -288,20 +311,13 @@
   // ---------- Map markers and clusters ----------
 
   // Listings closer than a marker's footprint are grouped (Map Cluster Marker 107:2820) with a numbered badge.
-  function markerGroups(list) {
+  function markerGroups(list, k = state.mapScale) {
+    // Seed-based grouping (no chaining), in a fixed ID order so sorting never changes the map.
     const groups = [];
-    for (const l of list) {
+    for (const l of list.slice().sort((a, b) => a.id.localeCompare(b.id))) {
       const p = { l, x: l.mapPx[0] * PX, y: l.mapPx[1] * PX };
-      const g = groups.find(g => g.items.some(q => Math.abs(q.x - p.x) < 56 && Math.abs(q.y - p.y) < 40));
-      if (g) g.items.push(p); else groups.push({ items: [p] });
-    }
-    // Merge groups that grew into each other.
-    for (let i = 0; i < groups.length; i++) {
-      for (let j = i + 1; j < groups.length; j++) {
-        if (groups[i].items.some(a => groups[j].items.some(b => Math.abs(a.x - b.x) < 56 && Math.abs(a.y - b.y) < 40))) {
-          groups[i].items.push(...groups[j].items); groups.splice(j, 1); j = i;
-        }
-      }
+      const g = groups.find(g => Math.abs(g.seed.x - p.x) * k < 72 && Math.abs(g.seed.y - p.y) * k < 40); // screen pt
+      if (g) g.items.push(p); else groups.push({ seed: p, items: [p] });
     }
     groups.forEach(g => {
       g.x = g.items.reduce((s, p) => s + p.x, 0) / g.items.length;
@@ -311,8 +327,15 @@
     });
     return groups;
   }
+  // Initial Home (All categories, empty query): circle only. Markers appear once a category or query is applied.
+  const showsMarkers = () => !!state.query || state.category !== 'all';
   function markers(list) {
-    return markerGroups(list).map(g => {
+    if (!showsMarkers()) return '';
+    // The selected listing always shows as its own marker; its neighbours keep clustering around it.
+    const sel = list.find(l => l.id === state.selectedListingId);
+    const groups = markerGroups(sel ? list.filter(l => l !== sel) : list);
+    if (sel) groups.push({ items: [{ l: sel }], x: sel.mapPx[0] * PX, y: sel.mapPx[1] * PX, key: sel.id });
+    return groups.map(g => {
       const style = `left:${g.x.toFixed(2)}px;top:${g.y.toFixed(2)}px`;
       if (g.items.length === 1) {
         const l = g.items[0].l;
@@ -327,7 +350,11 @@
         <span class="cluster-count t-sub-e">${g.items.length}</span><span class="t-sub-e">listings</span></button>`;
     }).join('');
   }
-  function groupFor(id, list) { return markerGroups(list).find(g => g.items.some(p => p.l.id === id)); }
+  function groupFor(id, list) {
+    const l = list.find(x => x.id === id);
+    if (l && id === state.selectedListingId) return { x: l.mapPx[0] * PX, y: l.mapPx[1] * PX, items: [{ l }] };
+    return markerGroups(list).find(g => g.items.some(p => p.l.id === id));
+  }
 
   // Map Listing Preview (107:2824), shown in the results sheet.
   function previewCard(l, { action = 'open-details', fid = 'preview-open', dismiss = true } = {}) {
@@ -398,7 +425,6 @@
       </section>
       <div class="scroll-edge"></div>
       ${filtersRow()}
-      <p class="map-label is-home-label">Within ${state.radius} miles of your search location</p>
       <p class="map-label is-map-label">Approximate listing locations · ${state.radius}-mile search area</p>
       ${tabbar()}`;
   }
@@ -409,9 +435,9 @@
     const probe = document.getElementById('inset-probe'); // top: var(--top), height: var(--bottom)
     return { top: probe.offsetTop, bottom: probe.offsetHeight, h: appEl.clientHeight };
   }
-  function snapTops() {
+  function snapTops({ withPreview = true } = {}) {
     const { top, bottom, h } = insets();
-    const hasPreview = !!(state.selectedListingId && compute().some(l => l.id === state.selectedListingId));
+    const hasPreview = withPreview && !!(state.selectedListingId && compute().some(l => l.id === state.selectedListingId));
     const collapsed = h - (158 + bottom) - (hasPreview ? PREVIEW_BLOCK : 0);  // M1: sheet top 740 on 932
     const expanded = top + 88;                                                 // 147 on 932 (F4)
     const half = Math.min(top + 389, h - 420);                                 // 448 on 932 (F4, S01)
@@ -432,6 +458,7 @@
     sheet.classList.toggle('is-compact', state.sheet === 'collapsed');
     appEl.dataset.sheet = state.sheet;
     const g = $('[data-fid="grabber"]'); if (g) g.setAttribute('aria-label', grabberLabel());
+    applyMapFrame();
     keepSelectionVisible(tops[state.sheet]);
   }
   function setSheet(snap, opts) { state.sheet = snap; if (snap === 'expanded') { state.pan = { x: 0, y: 0 }; applyPan(); } applySheet(opts); }
@@ -444,11 +471,10 @@
     const g = state.selectedListingId ? groupFor(state.selectedListingId, list) : (state.cluster && markerGroups(list).find(g => g.key === state.cluster));
     if (!g) return;
     const { top } = insets();
+    const f = mapFrame();
     const W = appEl.clientWidth, c = loc().px;
-    const worldLeft = W / 2 - c[0] * PX;
-    const worldTop = top - 59 + (state.sheet === 'collapsed' ? -78.65 : -208.65) + (898 - c[1]) * PX;
-    const x = worldLeft + g.x, y = worldTop + g.y;           // marker point (price markers sit above it)
-    const minY = top + 44 + 48 + 52, maxY = sheetTop - 16;   // below filters + map label, above the sheet
+    const x = W / 2 + (g.x - c[0] * PX) * f.s, y = f.cy + (g.y - c[1] * PX) * f.s; // marker point on screen
+    const minY = top + 44 + 48 + 52, maxY = sheetTop - 16;   // below filters + map label, room for the marker
     const minX = 64, maxX = W - 64;
     let { x: px, y: py } = state.pan;
     if (y + py < minY || y + py > maxY) py = Math.round((minY + maxY) / 2 - y);
@@ -781,6 +807,7 @@
     const prevList = $('[data-scroll="list"]'), prevFilters = $('.filters');
     const keep = !resetScroll && isDiscovery() && appEl.dataset.screen && isDiscovery(appEl.dataset.screen);
     const listY = keep && prevList ? prevList.scrollTop : 0, filterX = keep && prevFilters ? prevFilters.scrollLeft : 0;
+    state.mapScale = isDiscovery() ? mapFrame().s : 1;
     screenEl.innerHTML = SCREENS[state.screen]();
     appEl.classList.toggle('on-home', state.screen === 'home');
     appEl.dataset.screen = state.screen;
@@ -844,7 +871,7 @@
     if (next !== state.screen && state.sheet === defaultSheet(state.screen)) state.sheet = defaultSheet(next);
     state.screen = next;
     const ids = compute().map(l => l.id);
-    if (state.selectedListingId && !ids.includes(state.selectedListingId)) state.selectedListingId = null;
+    if (state.selectedListingId && (!ids.includes(state.selectedListingId) || !showsMarkers())) state.selectedListingId = null;
     state.cluster = null;
     state.pan = { x: 0, y: 0 };
     const prevFilters = $('.filters') ? $('.filters').scrollLeft : 0;
@@ -856,6 +883,7 @@
   }
   function showList(fid, { sheet } = {}) {
     state.screen = listScreen();
+    if (!showsMarkers()) { state.selectedListingId = null; state.cluster = null; }
     state.sheet = sheet || defaultSheet();
     state.pan = { x: 0, y: 0 };
     render({ resetScroll: true });

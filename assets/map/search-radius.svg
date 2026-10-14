@@ -1,7 +1,0 @@
-<svg preserveAspectRatio="none" overflow="visible" style="display: block;" width="584.965" height="584.965" viewBox="0 0 584.965 584.965" fill="none" xmlns="http://www.w3.org/2000/svg">
-<g id="Map/Search Radius (25 mi on supplied metro map)">
-<circle id="Search area (25-mile radius)" cx="292.482" cy="292.482" r="291.732" fill="#8610A8" fill-opacity="0.04" stroke="#8610A8" stroke-width="1.5"/>
-<circle id="Search center &#226;&#128;&#147; ring" cx="292.482" cy="292.482" r="7" fill="white" stroke="#8610A8" stroke-width="2"/>
-<circle id="Search center &#226;&#128;&#147; dot" cx="292.482" cy="292.482" r="3" fill="#8610A8"/>
-</g>
-</svg>

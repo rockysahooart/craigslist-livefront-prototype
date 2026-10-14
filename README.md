@@ -62,7 +62,7 @@ Everything below runs on the sample data. Search, filters, sorting, result count
 ## Simulated behaviour
 
 - **Contact seller.** A composer sheet whose own copy states "Sample listing: messages aren't sent". Sending shows "Message not sent". Nothing is stored or transmitted.
-- **Map.** The supplied static metro image at the handoff scale (0.5104 pt per image px; 25 miles = 571.6 px). Marker and area positions are approximate neighbourhoods (F4). There is no pan or zoom, and no "Search this area".
+- **Map.** The supplied static metro image (0.5104 pt per image px; 25 miles = 571.6 px). The search-radius circle is drawn at that true scale around the selected location: changing location moves it, and proximity sets its size. Category, query and filters only change which markers show. The initial Home map (All categories, no query) shows the circle alone; markers appear once a category or query is applied. When the circle is taller than the visible map (half sheet, or 50 miles), the map zooms out just enough to fit it, never below 60%. Markers keep their size, and clusters are measured on screen. Marker and area positions are approximate neighbourhoods. There's no hand pan or zoom, and no "Search this area". The pickup map in details has no search circle.
 - **Locations.** Minneapolis 55401 comes from F4. St. Paul 55102, Edina 55424 and Bloomington 55420 are approximate centres on the same map. Distances are straight-line measurements on that image. Your device location is never requested.
 - **Voice search.** Uses the browser's speech recognition when available (Chrome, Safari). Otherwise the mic opens the search field, where the keyboard's own dictation works.
 - **Persistence.** Saved listings, saved searches and recent searches live in this browser's localStorage. Clear the site's data in the browser to start fresh.
@@ -114,7 +114,7 @@ The derived icons `bookmark-fill.svg`, `saved-search-fill.svg` and `search-cente
 | #10 Location, radius, Filters form, sort | Built as supporting states |
 
 **Still open for the designer:**
-1. **Home radius overlay.** S01 draws the circle at 233 pt, off the 55401 point, unlike every other screen. It is kept as drawn only at the default location and distance; any other setting uses the computed circle.
+1. **Home radius overlay.** S01 draws a 233 pt circle off the 55401 point; the prototype replaces it with the true 25-mile circle centred on the search location, and removes the "Within 25 miles of your search location" bubble (by direction).
 2. **Marker anchoring.** M1 puts the Golf marker above its point and the $7,500 marker centred on its point. The prototype puts all price markers above their point for consistency, so the $7,500 marker sits about 22 pt higher than in M1.
 3. **Filter-row order** (F5 #9): resolved by direction. Location → Category → Distance → Price on every screen. This differs from S01, S06, S09 and S18, which put distance before category, and from S03, which starts with the category.
 4. **Subcategories.** Chevron rows (More for sale, Housing, Jobs, …) open the whole section; no subcategory lists are designed.
@@ -148,6 +148,6 @@ The derived icons `bookmark-fill.svg`, `saved-search-fill.svg` and `search-cente
 
 - **Not tested on a real iPhone or in Safari.** Keyboard avoidance uses `visualViewport` and the `interactive-widget` viewport hint. Bottom sheets and the contact bar should be checked against the real iOS keyboard before review.
 - **Browser Back isn't wired.** In-app state isn't in the URL, apart from shared `#listing=` links, so a reload starts at Home. Saved and recent items survive the reload.
-- **The map is a static image:** it doesn't pan or zoom by gesture (it only shifts to keep a selection in view), and there's no real geocoding or routing.
+- **The map is a static image:** it can't be panned or zoomed by hand (it only zooms to fit the radius and shifts to keep a selection in view), and there's no real geocoding or routing. The image reaches 22.4 miles east, 26.3 west, 39.3 north and 40.6 south of 55401, so the 25-mile circle's east edge runs about 2.6 miles past the imagery, and a 50-mile circle runs past every edge. On the half-height sheet the 25-mile circle needs about 54% zoom; at the 60% floor it overlaps the filter row and sheet edge by about 2 pt. On short phones it's clipped more.
 - **Twelve of the 20 vehicles have no photos** (sample data), so they show the "No photo" placeholder.
 - **Share and Copy link** depend on browser permission. Copy link may silently fail when the page is opened from `file://`.

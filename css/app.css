@@ -196,28 +196,19 @@ button {
   width: 568.591px;   /* 1114 px × 0.5104 */
   height: 932px;      /* 1826 px × 0.5104 */
   left: calc(50% - 306.75px);               /* search centre sits on the centre line */
-  top: var(--top-list, calc(var(--top) - 59px - 208.65px));   /* list framing (S01–S09) */
-  transform: translate(var(--pan-x, 0px), var(--pan-y, 0px));
+  top: calc(var(--top) - 59px - 208.65px);   /* list framing (S01–S09); discovery screens set it per sheet position */
+  transform: translate(var(--pan-x, 0px), var(--pan-y, 0px)) scale(var(--s, 1));
   transition: top 0.32s cubic-bezier(0.2, 0.8, 0.2, 1), transform 0.32s cubic-bezier(0.2, 0.8, 0.2, 1);
 }
-.app[data-sheet="collapsed"] .map-world { top: var(--top-map); }  /* map framing (M1/M2): +130 pt */
 .map-world.no-anim { transition: none; }
 .markers { position: absolute; inset: 0; }
 .app[data-sheet="expanded"] .markers { display: none; }
-/* Home keeps its drawn radius overlay (S01) until the map is in use; then the computed circle shows. */
-.map-radius.is-home { display: none; }
-.app[data-screen="home"]:not([data-sheet="collapsed"]) .map-radius.is-home { display: block; }
-.app[data-screen="home"]:not([data-sheet="collapsed"]) .is-home-alt { display: none; }
+/* Search-radius circle: below markers and controls; stroke and centre mark keep their size at any zoom. */
+.map-circle { pointer-events: none; }
+.map-center { transform: scale(var(--inv, 1)); transform-origin: 50% 50%; pointer-events: none; }
 .map-img { position: absolute; inset: 0; width: 100%; height: 100%; }
-.map-radius { position: absolute; left: 14.27px; top: 165.86px; width: 584.965px; height: 584.965px; max-width: none; }
-/* Home (S01) draws the radius at 233 pt, offset from 55401. Kept as drawn; flagged in README. */
-.map-radius.is-home { left: 237.43px; top: 389.35px; width: 233.6px; height: 233.6px; }
-.map-circle {
-  position: absolute;
-  border-radius: 50%;
-  border: 1.5px solid var(--purple);
-  background: rgba(134, 16, 168, 0.04);
-}
+.map-circle { position: absolute; overflow: visible; }
+.map-circle circle { fill: rgba(134, 16, 168, 0.04); stroke: var(--purple); stroke-width: calc(1.5px * var(--inv, 1)); } /* 1.5 pt at any zoom */
 .map-center { position: absolute; width: 18px; height: 18px; }
 .map-bg.is-home::after {
   content: "";
@@ -245,7 +236,6 @@ button {
 .scroll-edge.is-strong { background: linear-gradient(180deg, rgba(250, 250, 250, 0.9), rgba(250, 250, 250, 0)); }
 
 .map-label { display: none; }
-.app[data-screen="home"][data-sheet="half"] .map-label.is-home-label,
 .app[data-sheet="collapsed"] .map-label.is-map-label,
 .app:not([data-screen="home"])[data-sheet="half"] .map-label.is-map-label { display: block; }
 .app[data-sheet="collapsed"] .scroll-edge { opacity: 0; }
@@ -958,8 +948,8 @@ button {
   white-space: nowrap;
 }
 /* Price markers sit above their point, as the 2016 VW Golf marker does in M1 and M2. */
-.marker { transform: translate(-50%, -100%); }
-.marker.is-selected { transform: translate(-50%, calc(-100% + 4.4px)); }
+.marker { transform: translate(-50%, -100%) scale(var(--inv, 1)); transform-origin: 50% 100%; }
+.marker.is-selected { transform: translate(-50%, calc(-100% + 4.4px)) scale(var(--inv, 1)); }
 .marker.is-selected .marker-capsule {
   padding: 8px 14px;
   background: var(--purple);
@@ -978,7 +968,8 @@ button {
   border-radius: 999px;
   background: #fff;
   border: 1px solid var(--sep);
-  transform: translate(-50%, -50%);
+  transform: translate(-50%, -50%) scale(var(--inv, 1));
+  transform-origin: 50% 50%;
   white-space: nowrap;
 }
 .cluster-count {
