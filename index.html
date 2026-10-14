@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-visual">
+  <meta name="theme-color" content="#fafafa">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="format-detection" content="telephone=no">
+  <title>Craigslist iOS Prototype</title>
+  <link rel="icon" href="assets/img/craigslist-logo.svg" type="image/svg+xml">
+  <link rel="preload" href="assets/fonts/inter-latin-var.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+  <div class="stage">
+    <div class="device" id="device">
+      <div class="app" id="app">
+        <div class="screen" id="screen"></div>
+        <div class="overlay-layer" id="overlay"></div>
+        <div class="sys-status" aria-hidden="true">
+          <span class="sys-time">9:41</span>
+          <img class="sys-icons" src="assets/icons/status-icons.svg" alt="" width="78" height="13">
+        </div>
+        <div class="sys-home" aria-hidden="true"></div>
+        <div class="sr-only" id="live" aria-live="polite"></div>
+      </div>
+    </div>
+  </div>
+
+  <script src="js/data.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
