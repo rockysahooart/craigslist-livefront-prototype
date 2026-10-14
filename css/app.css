@@ -90,6 +90,19 @@ button {
   padding: 24px;
 }
 
+.notes {
+  width: 260px;
+  flex: none;
+  font-size: 14px;
+  line-height: 20px;
+  color: var(--page-ink-2);
+}
+.notes h1 { font-size: 18px; line-height: 24px; margin: 0 0 10px; color: var(--page-ink); font-weight: 650; }
+.notes ul { margin: 0; padding-left: 18px; }
+.notes li { margin-bottom: 8px; }
+.notes strong { color: var(--page-ink); font-weight: 600; }
+@media (max-width: 1000px) { .stage { flex-direction: column-reverse; gap: 24px; } .notes { width: 438px; max-width: 100%; } }
+
 .device {
   --scale: 1;
   zoom: var(--scale);
@@ -182,10 +195,19 @@ button {
   position: absolute;
   width: 568.591px;   /* 1114 px × 0.5104 */
   height: 932px;      /* 1826 px × 0.5104 */
-  left: calc(50% - 306.75px);               /* 55401 at image x 601 sits on the centre line */
-  top: calc(var(--top) - 59px - 208.65px);
+  left: calc(50% - 306.75px);               /* search centre sits on the centre line */
+  top: var(--top-list, calc(var(--top) - 59px - 208.65px));   /* list framing (S01–S09) */
+  transform: translate(var(--pan-x, 0px), var(--pan-y, 0px));
+  transition: top 0.32s cubic-bezier(0.2, 0.8, 0.2, 1), transform 0.32s cubic-bezier(0.2, 0.8, 0.2, 1);
 }
-.map-bg.is-map .map-world { top: calc(var(--top) - 59px - 78.65px); }
+.app[data-sheet="collapsed"] .map-world { top: var(--top-map); }  /* map framing (M1/M2): +130 pt */
+.map-world.no-anim { transition: none; }
+.markers { position: absolute; inset: 0; }
+.app[data-sheet="expanded"] .markers { display: none; }
+/* Home keeps its drawn radius overlay (S01) until the map is in use; then the computed circle shows. */
+.map-radius.is-home { display: none; }
+.app[data-screen="home"]:not([data-sheet="collapsed"]) .map-radius.is-home { display: block; }
+.app[data-screen="home"]:not([data-sheet="collapsed"]) .is-home-alt { display: none; }
 .map-img { position: absolute; inset: 0; width: 100%; height: 100%; }
 .map-radius { position: absolute; left: 14.27px; top: 165.86px; width: 584.965px; height: 584.965px; max-width: none; }
 /* Home (S01) draws the radius at 233 pt, offset from 55401. Kept as drawn; flagged in README. */
@@ -222,6 +244,11 @@ button {
 }
 .scroll-edge.is-strong { background: linear-gradient(180deg, rgba(250, 250, 250, 0.9), rgba(250, 250, 250, 0)); }
 
+.map-label { display: none; }
+.app[data-screen="home"][data-sheet="half"] .map-label.is-home-label,
+.app[data-sheet="collapsed"] .map-label.is-map-label,
+.app:not([data-screen="home"])[data-sheet="half"] .map-label.is-map-label { display: block; }
+.app[data-sheet="collapsed"] .scroll-edge { opacity: 0; }
 .map-label {
   position: absolute;
   margin: 0;
@@ -569,6 +596,54 @@ button {
 .tab.is-current { background: var(--purple-12); color: var(--purple); font-weight: 600; }
 /* Bottom-bar destinations outside this prototype: subtle mute, labels stay readable, inoperable. */
 .tab.is-outside { opacity: 0.45; filter: grayscale(1); cursor: not-allowed; }
+
+/* Discovery results sheet: three snap positions, dragged from the grabber or header */
+.dsheet { transition: top 0.32s cubic-bezier(0.2, 0.8, 0.2, 1); }
+.dsheet.is-dragging, .dsheet.no-anim { transition: none; }
+.grabber-btn {
+  position: absolute;
+  left: 50%; top: 0;
+  width: 120px; height: 26px;
+  margin-left: -60px;
+  z-index: 2;
+  border-radius: 13px;
+  touch-action: none;
+  cursor: grab;
+}
+.grabber-btn::before {
+  content: "";
+  position: absolute; left: 42px; top: 7.5px;
+  width: 36px; height: 5px; border-radius: 3px;
+  background: var(--sep);
+}
+.dsheet.is-dragging .grabber-btn { cursor: grabbing; }
+.app .grabber-btn:focus-visible { outline-offset: -2px; }
+[data-drag] { touch-action: none; }
+.handle-space { height: 20px; flex: none; }
+.sheet-full { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.sheet-compact {
+  display: none;
+  flex: none;
+  height: 50px;
+  padding: 6px 20px 0;
+  align-items: center;
+  justify-content: space-between;
+}
+.dsheet.is-compact .sheet-compact { display: flex; }
+.dsheet.is-compact .sheet-full { visibility: hidden; position: absolute; left: 0; right: 0; top: 50px; height: 100%; pointer-events: none; } /* hidden, keeps scroll */
+.list-scroll { touch-action: pan-y; }
+
+/* Listing preview inside the sheet (Map Listing Preview 107:2824) */
+.sheet-preview { flex: none; padding: 22px 16px 0; }
+.sheet-preview .preview, .cluster-list .preview { position: relative; left: auto; right: auto; bottom: auto; }
+.sheet-preview .preview::before, .cluster-list .preview::before { bottom: 0; }
+.preview-title, .preview-meta { max-width: 100%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.preview-text { min-width: 0; }
+.cluster-panel { flex: none; padding: 22px 16px 4px; display: flex; flex-direction: column; gap: 8px; }
+.cluster-head { display: flex; align-items: center; justify-content: space-between; padding-left: 4px; }
+.cluster-list { max-height: 236px; overflow-y: auto; overscroll-behavior: contain; display: flex; flex-direction: column; gap: 8px; }
+.cluster.is-selected { background: var(--purple); border: 2px solid #fff; color: #fff; box-shadow: var(--shadow-control); }
+.cluster.is-selected .cluster-count { background: #fff; color: var(--purple); }
 
 /* Search entry */
 .search-controls { gap: 10px; padding: 6px 12px 8px 20px; }
@@ -999,4 +1074,6 @@ button {
   }
   .app.kb-open { --bottom: 0px; }
   .sys-status, .sys-home { display: none; }
+  .notes { display: none; }
 }
+#inset-probe { position: absolute; left: 0; width: 0; top: var(--top); height: var(--bottom); visibility: hidden; pointer-events: none; }

@@ -15,6 +15,16 @@
 </head>
 <body>
   <div class="stage">
+    <!-- Reviewer annotations: outside the app, desktop only -->
+    <aside class="notes" aria-label="Reviewer notes">
+      <h1>Prototype notes</h1>
+      <ul>
+        <li><strong>Sample content.</strong> All listings are sample data. Condition, availability and safety are not verified, and messages to sellers aren’t sent.</li>
+        <li><strong>Illustrative geography.</strong> The map is a static image of the Twin Cities metro. Listing locations are approximate neighbourhood points, not addresses. The map only shifts to keep a selected listing in view; it doesn’t pan or zoom.</li>
+        <li><strong>Results sheet.</strong> Drag the handle or sheet header, or tap the handle, to move between map, half and full list. Arrow keys work when the handle is focused.</li>
+        <li><strong>Outside scope.</strong> Favorites, Post, Account, and Chat are outside this prototype.</li>
+      </ul>
+    </aside>
     <div class="device" id="device">
       <div class="app" id="app">
         <div class="screen" id="screen"></div>
@@ -25,6 +35,7 @@
         </div>
         <div class="sys-home" aria-hidden="true"></div>
         <div class="sr-only" id="live" aria-live="polite"></div>
+        <div id="inset-probe" aria-hidden="true"></div>
       </div>
     </div>
   </div>
