@@ -220,3 +220,68 @@ The latest results for this build are in the release notes of the commit that pu
 - **Saved searches:** only one appears on Home, and there's no Saved searches list.
 - **Photos:** one per listing. AI-generated sample images, not real vehicles.
 - **Not tested on a real iPhone.**
+
+## What I would provide to the team
+
+"Available" means it's in this repository, the live prototype or the [Figma file](https://www.figma.com/design/uBDKd4xLS50msiung2aDGJ/LiveFront-Challenge). "Next" is what I'd prepare.
+
+### Senior designer
+
+- **Rationale and assumptions:**
+  - **Available:** the notes in the Figma file, including the exploration's hypothesis.
+  - **Next:** research evidence, which isn't in this repository yet.
+- **Components and states:**
+  - **Available:** the [live prototype](https://rockysahooart.github.io/craigslist-livefront-prototype/) shows every interaction state, and the Figma file holds the components.
+  - **Next:** a write-up of the tradeoffs where I extended Figma (location, distance, sort, year, make/model) for critique.
+- **Open questions:**
+  - **Available:** [Known limitations](#known-limitations).
+  - **Next:** a list of open questions and a usability test plan for the saved-search concept.
+
+### Product owner
+
+- **Scope:**
+  - **Available:** this README separates the built journey, [what's unavailable](#unavailable-as-scoped) and the exploratory concept.
+  - **Next:** a prioritised first-release proposal.
+- **User needs, hypotheses and measures:**
+  - **Available:** the saved-search hypothesis and proposed measures in the Figma exploration notes. They're unmeasured.
+  - **Next:** user needs tied to evidence, and success metrics with baselines.
+- **Acceptance criteria and decisions:**
+  - **Next:** acceptance criteria drawn from the behaviour documented here.
+  - **Next:** the dependencies (tile provider, alert delivery, location data) and the decisions they need.
+
+### Engineer
+
+- **Prototype and assets:**
+  - **Available:** the working prototype ([index.html](index.html), [js/app.js](js/app.js), [css/app.css](css/app.css)) and the assets, with photo sources in [assets/img/SOURCES.md](assets/img/SOURCES.md).
+  - **Next:** component specifications mapped to the Figma components.
+- **Data and behaviour rules:**
+  - **Available:** sample data in [js/data.js](js/data.js). Filter, map, network-recovery and saved-search rules are in the sections above.
+- **API questions and reviews:**
+  - **Next:** API questions (search, geocoding, alerts, production tiles), and design reviews of working builds.
+
+### QA / accessibility tester
+
+- **Core tasks and expected outcomes:**
+  - **Available:** the flows are listed under [Features and working flows](#features-and-working-flows).
+  - **Available:** I ran automated checks in headless Chrome at phone and desktop sizes. All 702 passed against the live site on 2026-10-19.
+  - **Next:** add those test scripts to this repository; they aren't in it yet.
+- **Edge cases and regression checks:**
+  - **Available:** edge cases are built into the sample data (unknown mileage, price and mileage boundaries, removed listing) and the [network simulations](#network-simulations-and-demo-controls).
+  - **Next:** a written regression checklist.
+- **Accessibility:**
+  - **Available:** labels, focus handling and keyboard access are built, and are partly checked by script.
+  - **Pending:** VoiceOver testing, a contrast audit and testing on a real iPhone.
+
+### Stakeholder
+
+- **Problem and direction:**
+  - **Available:** the [live prototype](https://rockysahooart.github.io/craigslist-livefront-prototype/) shows the proposed direction.
+  - **Next:** a one-page summary of the problem and the evidence behind it.
+- **Scope, risks and opportunity:**
+  - **Available:** scope and risks are under [Unavailable](#unavailable-as-scoped) and [Known limitations](#known-limitations).
+  - **Business opportunity:** the business opportunity is a hypothesis in the Figma notes, not measured.
+- **What I'd measure before expanding:**
+  - saved search → return visit → listing opened
+  - price alert → contact started
+  - alert opt-outs
+  - **Next:** the decisions that are needed before release.
