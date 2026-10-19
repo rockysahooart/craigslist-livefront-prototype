@@ -11,6 +11,7 @@
   <title>Craigslist iOS Prototype</title>
   <link rel="icon" href="assets/img/craigslist-logo.svg" type="image/svg+xml">
   <link rel="preload" href="assets/fonts/inter-latin-var.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" crossorigin="anonymous" referrerpolicy="no-referrer">
   <link rel="stylesheet" href="css/app.css">
 </head>
 <body>
@@ -20,10 +21,21 @@
       <h1>Prototype notes</h1>
       <ul>
         <li><strong>Sample data.</strong> Listings and sellers are fictional. Vehicle photos are AI-generated sample images.</li>
-        <li><strong>Map.</strong> Static image; locations are illustrative, distances straight-line.</li>
+        <li><strong>Map.</strong> Interactive map (Leaflet, OpenStreetMap tiles). Listing positions and search centres are illustrative; distances are straight-line.</li>
         <li><strong>Not in Figma.</strong> Year, make/model, location and distance controls.</li>
-        <li><strong>Unavailable.</strong> Favorites, Post, Account, Chat, Save search, Contact seller.</li>
+        <li><strong>Unavailable.</strong> Favorites, Post, Account, Chat, Saved searches list, Contact seller.</li>
+        <li><strong>Exploratory concept.</strong> Save search, alerts, Continue your search and price-drop alerts are a proposed concept, not validated. Notifications are simulated examples; nothing is monitored or delivered.</li>
       </ul>
+      <section class="sim" aria-labelledby="demo-title">
+        <h2 class="notes-h2" id="demo-title">Saved-search demo (simulated)</h2>
+        <p class="sim-note">Triggers events for the concept. Save a search first; turn on price-drop alerts on a saved 2016 VW Golf.</p>
+        <div class="sim-scenarios">
+          <button type="button" data-demo="new-match">New listing matches</button>
+          <button type="button" data-demo="price-drop">Price drop on 2016 VW Golf</button>
+          <button type="button" data-demo="reset">Reset demo</button>
+        </div>
+        <p class="sim-note" id="demo-status" aria-live="polite"></p>
+      </section>
       <section class="sim" aria-labelledby="sim-title">
         <h2 class="notes-h2" id="sim-title">Simulated network conditions</h2>
         <p class="sim-note">Demo controls for reviewers. They aren’t part of the app.</p>
@@ -39,8 +51,10 @@
     </aside>
     <div class="device" id="device">
       <div class="app" id="app">
+        <div class="map-layer" id="map-layer"><div id="map" role="region" aria-label="Map of approximate listing locations"></div></div>
         <div class="screen" id="screen"></div>
         <div class="overlay-layer" id="overlay"></div>
+        <div class="notif-layer" id="notif" hidden></div>
         <div class="sys-status" aria-hidden="true">
           <span class="sys-time">9:41</span>
           <img class="sys-icons" src="assets/icons/status-icons.svg" alt="" width="78" height="13">
@@ -52,6 +66,7 @@
     </div>
   </div>
 
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
   <script src="js/data.js"></script>
   <script src="js/app.js"></script>
 </body>

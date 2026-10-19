@@ -21,7 +21,9 @@ window.CL_DATA = (function () {
     { id: 'L10', title: '2013 Ford Focus', year: 2013, make: 'Ford', model: 'Focus', price: 5900, miles: null, seller: 'Owner', hours: 5, minutes: 300, area: 'Uptown', category: 'cars-trucks', photo: 'assets/img/L10-card.jpg', mapPx: [572, 938] },          // mileage not listed
     { id: 'L11', title: '2016 VW Jetta', year: 2016, make: 'Volkswagen', model: 'Jetta', price: 8400, miles: 100000, seller: 'Dealer', hours: 5, minutes: 320, area: 'Roseville', category: 'cars-trucks', photo: 'assets/img/L11-card.jpg', mapPx: [772, 796] },     // exactly 100,000 mi
     { id: 'L12', title: '2012 Honda Accord', year: 2012, make: 'Honda', model: 'Accord', price: 10000, miles: 150000, seller: 'Owner', hours: 6, minutes: 360, area: 'Maple Grove', category: 'cars-trucks', photo: 'assets/img/L12-card.jpg', mapPx: [395, 770] }, // exactly $10,000
-    { id: 'L13', title: 'Toyota Tacoma pickup', year: null, make: 'Toyota', model: 'Tacoma', price: 11500, miles: 140000, seller: 'Owner', hours: 6, minutes: 380, area: 'Blaine', category: 'cars-trucks', photo: 'assets/img/L13-card.jpg', mapPx: [640, 632] }     // year not listed
+    { id: 'L13', title: 'Toyota Tacoma pickup', year: null, make: 'Toyota', model: 'Tacoma', price: 11500, miles: 140000, seller: 'Owner', hours: 6, minutes: 380, area: 'Blaine', category: 'cars-trucks', photo: 'assets/img/L13-card.jpg', mapPx: [640, 632] },    // year not listed
+    // Exploration (returning to a car search): new inventory that appears only when the reviewer simulates it.
+    { id: 'L14', title: '2015 VW Golf', year: 2015, make: 'Volkswagen', model: 'Golf', price: 8400, miles: 101000, seller: 'Owner', hours: 0, minutes: 20, area: 'Golden Valley', category: 'cars-trucks', photo: 'assets/img/L14-card.jpg', mapPx: [470, 860], hidden: true }
   ];
   listings.forEach(l => { if (!l.detail) l.detail = l.miles != null ? `${l.miles.toLocaleString('en-US')} miles` : 'Mileage not listed'; });
 

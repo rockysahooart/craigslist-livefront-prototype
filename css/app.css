@@ -1220,3 +1220,108 @@ button {
 .sim-scenarios { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 .notes .sim-scenarios button { margin-top: 0; }
 .notes .sim-scenarios button[aria-pressed="true"] { background: #8610a8; border-color: #8610a8; color: #fff; }
+
+/* ---------- Exploration · returning to a car search (proposed concept) ---------- */
+/* Home: Continue your search (R3) */
+.continue {
+  width: 100%; min-height: 56px;
+  display: flex; align-items: center; gap: 12px;
+  padding: 10px 12px 10px 16px;
+  border-radius: 16px;
+  background: #fff;
+  box-shadow: inset 0 0 0 1px var(--sep);
+  text-align: left;
+}
+.continue-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.continue-text .t-foot { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.continue-new { flex: none; display: inline-flex; align-items: center; gap: 4px; color: var(--purple); }
+.continue-new .ic-chevron { width: 14px; height: 14px; }
+/* Results: saved-search line (R5) and confirmation (R2) */
+.saved-line { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: -6px; }
+.saved-line .t-sub { min-width: 0; }
+.saved-line .text-btn { flex: none; font-weight: 600; padding-right: 0; }
+.saved-toast {
+  position: absolute; left: 16px; right: 16px; z-index: 30;
+  bottom: calc(var(--bottom) + 76px);
+  display: flex; align-items: center; gap: 12px;
+  padding: 10px 8px 10px 16px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.97);
+  -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.12), 0 0 0 0.5px rgba(0, 0, 0, 0.08);
+}
+.saved-toast-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.saved-toast .text-btn { font-weight: 600; }
+/* Cards: new match and lowered price */
+.new-tag { color: var(--purple); font-weight: 600; }
+.card-meta.is-drop { color: var(--purple); }
+/* Details: price change and price-drop alerts (R6, R6b, R8) */
+.price-drop-line { color: var(--purple); }
+.price-alert {
+  display: flex; align-items: center; gap: 12px;
+  padding: 12px 8px 12px 14px;
+  border-radius: 14px;
+  background: rgba(134, 16, 168, 0.06);
+}
+.price-alert-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.price-alert .text-btn { flex: none; font-weight: 600; }
+.stop-updates { align-self: flex-start; padding-left: 0; font-weight: 600; }
+.text-btn.is-destructive { color: #c4002b; align-self: flex-start; padding-left: 0; }
+/* Example notification (R4, R7): simulated, clearly labelled */
+.notif-layer { position: absolute; inset: 0; z-index: 60; }
+.notif-layer[hidden] { display: none; }
+.notif-scrim { position: absolute; inset: 0; background: rgba(0, 0, 0, 0.32); }
+.notif-stack { position: absolute; left: 12px; right: 12px; top: calc(var(--top) + 12px); display: flex; flex-direction: column; gap: 8px; }
+.notif {
+  position: relative; width: 100%;
+  display: flex; align-items: flex-start; gap: 12px;
+  padding: 12px 14px;
+  border-radius: 22px;
+  background: rgba(250, 250, 250, 0.97);
+  -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+  text-align: left;
+}
+.notif-icon { width: 38px; height: 38px; flex: none; border-radius: 9px; background: var(--purple); }
+.notif-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; font-size: 15px; line-height: 20px; letter-spacing: -0.1px; }
+.notif-app { color: var(--label-2); font-size: 13px; line-height: 18px; }
+.notif-caption { margin: 0 8px; color: #fff; font-size: 13px; line-height: 18px; font-weight: 500; text-shadow: 0 1px 2px rgba(0,0,0,0.4); }
+
+/* ---------- Interactive map (Leaflet). One instance below #screen; the screen passes gestures through. ---------- */
+.map-layer { position: absolute; inset: 0; z-index: 0; background: #eceae6; }
+.map-layer #map { position: absolute; inset: 0; background: #eceae6; font: inherit; touch-action: none; }
+.screen { pointer-events: none; }
+.screen > * { pointer-events: auto; }
+.screen > .map-edge, .screen > .map-home-fade, .screen > .scroll-edge, .screen > .map-label { pointer-events: none; }
+.map-home-fade { position: absolute; left: 0; right: 0; top: 0; height: 50%; box-shadow: inset 0 43px 41.1px rgba(255, 255, 255, 0.8); }
+.app[data-screen="details"] .map-layer, .app[data-screen="search"] .map-layer #map .leaflet-control-container { visibility: hidden; }
+/* Markers keep their screen size; the anchor is the listing's point. */
+.lf-icon { background: none; border: 0; }
+.lf-icon .marker, .lf-icon .cluster { left: 0; pointer-events: auto; }
+.lf-icon.map-centre img { position: absolute; left: -9px; top: -9px; width: 18px; height: 18px; }
+.leaflet-container .marker:focus-visible, .leaflet-container .cluster:focus-visible { outline: 2px solid var(--purple); outline-offset: 2px; }
+/* Attribution: readable, kept just above the sheet's top edge. */
+.map-layer .leaflet-bottom.leaflet-right { bottom: var(--attr-bottom, 4px); transition: bottom 0.32s cubic-bezier(0.2, 0.8, 0.2, 1); }
+.map-layer .leaflet-control-attribution { margin: 0 8px 0 0; padding: 2px 6px; border-radius: 6px; background: rgba(255, 255, 255, 0.85); color: #3c3c43; font-size: 11px; line-height: 15px; }
+.map-layer .leaflet-control-attribution a { color: #3c3c43; text-decoration: underline; }
+.app[data-view="list"] .map-layer .leaflet-control-attribution { visibility: hidden; }  /* map is behind the list; shown with the map */
+/* Zoom and Reset map: on Home and in the map view, under the filter row. */
+.map-controls { position: absolute; right: 12px; top: calc(var(--top) + 56px); z-index: 4; display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
+.app[data-view="list"] .map-controls { display: none; }
+.map-reset {
+  min-height: 44px; padding: 0 14px; border-radius: 999px;
+  background: var(--glass-fill); -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur);
+  border: 1px solid var(--glass-stroke); box-shadow: var(--shadow-control);
+  color: var(--purple); font-size: 15px; font-weight: 600; letter-spacing: -0.1px;
+}
+.map-notice {
+  position: absolute; left: 16px; right: 72px; top: calc(var(--top) + 56px); z-index: 5;
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 8px 8px 14px; border-radius: 18px;
+  background: rgba(255, 255, 255, 0.96); -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.12), 0 0 0 0.5px rgba(0, 0, 0, 0.08);
+}
+.map-notice p { flex: 1; min-width: 0; }
+.map-retry { flex: none; min-height: 44px; padding: 0 14px; border-radius: 999px; color: var(--purple); box-shadow: inset 0 0 0 1.5px var(--purple); font-size: 15px; font-weight: 600; }
+.app[data-view="list"] .map-notice { display: none; }
+.app[data-view="map"] .map-notice { top: calc(var(--top) + 96px); }

@@ -39,6 +39,22 @@
   };
   let saved = store.get('saved-listings', []).filter(id => byId[id]);
   let recents = store.get('recents-v3', null) || D.recentSeed.slice();
+  // Exploration · returning to a car search (proposed concept). Saved searches are kept apart from saved listings.
+  let savedSearches = store.get('saved-searches-v1', []);     // [{ id, crit, alerts: off|daily|weekly, savedAt, lastViewedAt }]
+  let priceAlerts = store.get('price-alerts-v1', []).filter(id => byId[id]);   // listing ids with price-drop alerts on
+  let demo = store.get('demo-v1', { newInventory: false, addedAt: 0, priceDrop: null });
+  const persistSaved = () => store.set('saved-searches-v1', savedSearches);
+  const persistAlerts = () => store.set('price-alerts-v1', priceAlerts);
+  // Simulated events change the sample data itself, so cards, counts, markers and details stay in step.
+  function applyDemo() {
+    const n = byId.L14;
+    n.hidden = !demo.newInventory; n.addedAt = demo.addedAt || 0;
+    const l = byId.L01;
+    if (demo.priceDrop) { l.price = demo.priceDrop.to; l.priceWas = demo.priceDrop.from; l.priceDropOn = demo.priceDrop.on; }
+    else { l.price = 8900; delete l.priceWas; delete l.priceDropOn; }
+    store.set('demo-v1', demo);
+  }
+  applyDemo();
 
   // ---------- State (one shared filter state for every screen) ----------
 
@@ -68,7 +84,9 @@
       overlay: null,           // { type, focusReturn, rect }
       results: null,           // last successfully loaded search: { crit, key }. Everything on screen comes from it.
       req: null,               // request in flight or failed: { id, key, crit, status: loading | slow | failed, retry }
-      removed: []
+      removed: [],
+      savedView: null,         // { id, newIds, since } for the saved search being viewed
+      savedToast: null         // saved search id while the "Search saved" confirmation shows
     };
   }
   let state = initialState();
@@ -90,8 +108,29 @@
   }
   const isCars = (cat = state.category) => cat === 'cars-trucks';
   const scopeLine = () => `${catLabel(state.category)} · ${loc().label} · ${state.radius} miles`;
-  const milesFrom = (l, at = state.location) => { const c = loc(at).px; return Math.hypot(l.mapPx[0] - c[0], l.mapPx[1] - c[1]) / D.PX_PER_MILE; };
+  // Sample coordinates were drawn on the supplied metro map (image px). They are placed on the interactive map by
+  // anchoring ZIP 55401 (image px 601, 898) at its real position and using the image's scale (22.86 px per mile).
+  // They stay illustrative points, not addresses.
+  const GEO = { lat: 44.9855, lng: -93.2690, px: [601, 898] };
+  const MILE_M = 1609.344;
+  const toLatLng = ([x, y]) => [
+    GEO.lat - (y - GEO.px[1]) / D.PX_PER_MILE / 69.055,
+    GEO.lng + (x - GEO.px[0]) / D.PX_PER_MILE / (69.172 * Math.cos(GEO.lat * Math.PI / 180))
+  ];
+  function haversineMiles(a, b) {
+    const R = 3958.7613, rad = d => d * Math.PI / 180;
+    const dLat = rad(b[0] - a[0]), dLng = rad(b[1] - a[1]);
+    const h = Math.sin(dLat / 2) ** 2 + Math.cos(rad(a[0])) * Math.cos(rad(b[0])) * Math.sin(dLng / 2) ** 2;
+    return 2 * R * Math.asin(Math.sqrt(h));
+  }
+  D.listings.forEach(l => { l.latLng = toLatLng(l.mapPx); });
+  D.locations.forEach(c => { c.latLng = toLatLng(c.px); });
+  // Proximity: great-circle distance, the same geometry the map's circle uses.
+  const milesFrom = (l, at = state.location) => haversineMiles(loc(at).latLng, l.latLng);
 
+  const ago = l => l.minutes < 60 ? `${l.minutes} min ago` : `${l.hours} hr ago`;
+  const agoLong = l => l.minutes < 60 ? plural(l.minutes, 'minute') + ' ago' : plural(l.hours, 'hour') + ' ago';
+  const fmtDate = t => new Date(t).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
   const hasPrice = (p = state.price.applied) => p.min != null || p.max != null;
   function priceLabel(p = state.price.applied) {
     if (p.min != null && p.max != null) return `${money(p.min)}–${money(p.max)}`;
@@ -134,7 +173,7 @@
     const x = activeExtras(extras, category);
     const q = words(query);
     const list = D.listings
-      .filter(l => !state.removed.includes(l.id))
+      .filter(l => !l.hidden && !state.removed.includes(l.id))
       .filter(l => inCategory(l, category))
       .filter(l => milesFrom(l, location) <= radius)                                // proximity: real distance
       .filter(l => { const t = words(l.title); return q.every(w => t.some(tw => tw.startsWith(w))); })
@@ -159,6 +198,32 @@
   const critKey = c => JSON.stringify(c);
   const shown = () => state.results ? compute(state.results.crit) : [];
 
+  // Saved searches: short label ("Volkswagen Golf · Up to $10,000 · 25 mi") and full context.
+  const titleCase = q => q.replace(/\b\w/g, c => c.toUpperCase());
+  function searchLabel(c) {
+    const parts = [c.query ? titleCase(c.query) : catLabel(c.category)];
+    if (hasPrice(c.price)) parts.push(priceLabel(c.price));
+    const also = alsoFiltered(c.extras).replace(/^Also filtered: /, '');
+    if (also) parts.push(also);
+    parts.push(`${c.radius} mi`);
+    return parts.join(' · ');
+  }
+  function searchContext(c) {
+    const parts = [];
+    if (c.query) parts.push(titleCase(c.query));
+    parts.push(catLabel(c.category), loc(c.location).label, `${c.radius} miles`);
+    if (hasPrice(c.price)) parts.push(priceLabel(c.price));
+    const also = alsoFiltered(c.extras).replace(/^Also filtered: /, '');
+    if (also) parts.push(also);
+    return parts.join(' · ');
+  }
+  const ALERTS = [{ id: 'off', label: 'Off' }, { id: 'daily', label: 'Daily' }, { id: 'weekly', label: 'Weekly' }];
+  const alertsLabel = a => ALERTS.find(x => x.id === a).label;
+  const matchedSaved = () => savedSearches.find(ss => critKey(ss.crit) === critKey(criteria()));
+  // New matches = listings that arrived after this saved search was last viewed.
+  const newSince = ss => compute(ss.crit).filter(l => (l.addedAt || 0) > ss.lastViewedAt);
+  const isNewHere = id => { const m = matchedSaved(); return !!(m && state.savedView && state.savedView.id === m.id && state.savedView.newIds.includes(id)); };
+
   const listScreen = () => state.query ? 'results' : (state.category === 'all' ? 'home' : 'browse');
   const showsMarkers = () => !!state.query || state.category !== 'all';    // Home: circle only
   function announce(msg) { liveEl.textContent = ''; setTimeout(() => { liveEl.textContent = msg; }, 30); }
@@ -178,20 +243,9 @@
     </nav>`;
   }
 
-  // Map world centred on the selected search location; circle radius = proximity at the shared scale.
+  // The interactive map lives in #map-layer (created once). Screens only add the overlays that sit above it.
   function mapBg(opts = {}) {
-    const c = loc().px;
-    const r = state.radius * D.PX_PER_MILE * PX;
-    const cx = c[0] * PX, cy = c[1] * PX;
-    return `<div class="map-bg ${opts.home ? 'is-home' : ''}" data-action="map-bg">
-      <div class="map-world" style="left:calc(50% - ${cx.toFixed(2)}px);top:calc(var(--top) - 59px - 208.65px + ${((898 - c[1]) * PX).toFixed(2)}px);transform-origin:${cx.toFixed(2)}px ${cy.toFixed(2)}px;--pan-x:${state.pan.x}px;--pan-y:${state.pan.y}px;--s:${state.mapScale};--inv:${(1 / state.mapScale).toFixed(4)}">
-        <img class="map-img" src="assets/map/metro-map.png" alt="">
-        <svg class="map-circle" aria-hidden="true" width="${(2 * r).toFixed(2)}" height="${(2 * r).toFixed(2)}" viewBox="0 0 ${(2 * r).toFixed(2)} ${(2 * r).toFixed(2)}" style="left:${(cx - r).toFixed(2)}px;top:${(cy - r).toFixed(2)}px"><circle cx="${r.toFixed(2)}" cy="${r.toFixed(2)}" r="${r.toFixed(2)}"/></svg>
-        ${opts.home ? '' : `<img class="map-center" src="assets/map/search-center.svg" alt="" style="left:${(cx - 9).toFixed(2)}px;top:${(cy - 9).toFixed(2)}px">`}
-        <div class="markers" role="group" aria-label="Listing markers">${opts.markers || ''}</div>
-      </div>
-    </div>
-    <div class="map-edge"></div>`;
+    return `${opts.home ? '<div class="map-home-fade" aria-hidden="true"></div>' : ''}<div class="map-edge" aria-hidden="true"></div>`;
   }
 
   function pillDefault(label, { tag = false, action, fid, aria, disabled = false }) {
@@ -228,13 +282,17 @@
   function card(l) {
     const photo = l.photo ? `<img src="${l.photo}" alt="" loading="lazy">` : `<span class="no-photo">${icon('photo')}<span>No photo</span></span>`;
     const seller = l.seller ? `<span class="card-seller"><span>·</span><span>${l.seller}</span></span>` : '';
-    const label = `${l.title}, ${money(l.price)}, ${l.detail}${l.seller ? ', ' + l.seller : ''}, ${plural(l.hours, 'hour')} ago, ${l.area}${l.photo ? '' : ', no photo'}`;
+    const isNew = isNewHere(l.id);
+    const label = `${isNew ? 'New. ' : ''}${l.title}, ${money(l.price)}${l.priceWas ? `, price lowered from ${money(l.priceWas)}` : ''}, ${l.detail}${l.seller ? ', ' + l.seller : ''}, ${agoLong(l)}, ${l.area}${l.photo ? '' : ', no photo'}`;
+    const meta = l.priceWas
+      ? `<span class="card-meta is-drop">Price lowered from ${money(l.priceWas)}</span>`
+      : `<span class="card-meta">${isNew ? '<b class="new-tag">New</b> · ' : ''}${ago(l)} • ${esc(l.area)}</span>`;
     return `<button type="button" class="card" data-action="open-details" data-id="${l.id}" data-fid="card-${l.id}" aria-label="${esc(label)}">
       <span class="card-photo">${photo}<span class="price-badge">${money(l.price)}</span></span>
       <span class="card-text">
         <span class="card-title">${esc(l.title)}</span>
         <span class="card-detail"><span class="${l.miles == null && l.category === 'cars-trucks' ? 'c2' : ''}">${esc(l.detail)}</span>${seller}</span>
-        <span class="card-meta">${l.hours} hr ago • ${esc(l.area)}</span>
+        ${meta}
       </span>
     </button>`;
   }
@@ -254,7 +312,35 @@
     const label = `${icon('sliders')}<span>Filters${n ? ` (${n})` : ''}</span>`;
     return `<button type="button" class="quiet" data-action="open-filters" data-fid="filters-btn" aria-haspopup="dialog" aria-label="Filters${n ? `, ${n} active` : ''}">${label}</button>`;
   }
-  const saveSearch = () => unavailable('quiet', `${icon('saved-search')}<span>Save search</span>`, 'Save search');
+  function saveSearch() {
+    if (matchedSaved()) return `<button type="button" class="quiet is-active" data-action="open-manage" data-fid="save-btn" aria-haspopup="dialog" aria-label="Search saved. Manage saved search">${icon('saved-search')}<span>Search saved</span></button>`;
+    return `<button type="button" class="quiet" data-action="open-save" data-fid="save-btn" aria-haspopup="dialog">${icon('saved-search')}<span>Save search</span></button>`;
+  }
+  // Home: one entry for the most recent saved search; hidden when there is none.
+  function continueEntry() {
+    const ss = savedSearches[0];
+    if (!ss) return '';
+    const n = newSince(ss).length;
+    return `<button type="button" class="continue" data-action="continue-search" data-fid="continue-search" aria-label="Continue your search: ${esc(searchLabel(ss.crit))}${n ? `, ${n} new` : ''}">
+      <span class="continue-text"><span class="t-headline">Continue your search</span><span class="t-foot c2">${esc(searchLabel(ss.crit))}</span></span>
+      <span class="continue-new t-sub-e">${n ? `${n} new` : ''}${icon('chevron', 'ic-chevron')}</span>
+    </button>`;
+  }
+  function savedLine() {
+    const ss = matchedSaved();
+    if (!ss || state.savedToast) return '';
+    const v = state.savedView && state.savedView.id === ss.id && state.savedView.newIds.length ? state.savedView : null;
+    const text = `Saved search${v ? ` · ${v.newIds.length} new since ${fmtDate(v.since)}` : ''} · Alerts: ${alertsLabel(ss.alerts)}`;
+    return `<div class="saved-line"><span class="t-sub c2">${esc(text)}</span><button type="button" class="text-btn" data-action="open-manage" data-fid="saved-manage" aria-haspopup="dialog" aria-label="Manage saved search">Manage</button></div>`;
+  }
+  function savedToast() {
+    const ss = state.savedToast && matchedSaved();
+    if (!ss || ss.id !== state.savedToast) return '';     // only on the saved search's own results
+    return `<div class="saved-toast">
+      <div class="saved-toast-text"><b class="t-headline">Search saved</b><span class="t-foot c2">${esc(searchLabel(ss.crit))} · Alerts: ${alertsLabel(ss.alerts)}</span></div>
+      <button type="button" class="text-btn" data-action="open-manage" data-fid="toast-manage" aria-haspopup="dialog" aria-label="Manage saved search">Manage</button>
+    </div>`;
+  }
   const placeholder = () => state.category === 'all' ? 'Try searching ‘cars’' : `Search ${catLabel(state.category).toLowerCase()}`;
   function searchFieldIdle() {
     return `<div class="field has-main">
@@ -335,45 +421,60 @@
 
   // ---------- Markers ----------
 
-  function markerGroups(list, k = state.mapScale) {
-    const groups = [];
-    for (const l of list.slice().sort((a, b) => a.id.localeCompare(b.id))) {
-      const p = { l, x: l.mapPx[0] * PX, y: l.mapPx[1] * PX };
-      const g = groups.find(g => Math.abs(g.seed.x - p.x) * k < 56 && Math.abs(g.seed.y - p.y) * k < 40);
-      if (g) g.items.push(p); else groups.push({ seed: p, items: [p] });
+  // Group markers whose labels would overlap at the current zoom, in screen space. Price labels and cluster badges are
+  // about 100 × 44 pt, so groups closer than that merge (repeated until no two groups overlap).
+  function markerGroups(list) {
+    let groups = list.slice().sort((a, b) => a.id.localeCompare(b.id)).map(l => {
+      const pt = lmap.latLngToLayerPoint(l.latLng);
+      return { x: pt.x, y: pt.y, items: [{ l, x: pt.x, y: pt.y }] };
+    });
+    for (let merged = true; merged;) {
+      merged = false;
+      outer: for (let i = 0; i < groups.length; i++) for (let j = i + 1; j < groups.length; j++) {
+        const a = groups[i], b = groups[j];
+        if (Math.abs(a.x - b.x) < 104 && Math.abs(a.y - b.y) < 46) {
+          a.items.push(...b.items);
+          a.x = a.items.reduce((s, p) => s + p.x, 0) / a.items.length;
+          a.y = a.items.reduce((s, p) => s + p.y, 0) / a.items.length;
+          groups.splice(j, 1); merged = true; break outer;
+        }
+      }
     }
     groups.forEach(g => {
-      g.x = g.items.reduce((s, p) => s + p.x, 0) / g.items.length;
-      g.y = g.items.reduce((s, p) => s + p.y, 0) / g.items.length;
+      g.lat = g.items.reduce((s, p) => s + p.l.latLng[0], 0) / g.items.length;
+      g.lng = g.items.reduce((s, p) => s + p.l.latLng[1], 0) / g.items.length;
       g.items.sort((a, b) => a.l.minutes - b.l.minutes);
       g.key = g.items.map(p => p.l.id).sort().join('-');
     });
     return groups;
   }
-  function markerHtml(l, x, y) {
+  function markerHtml(l, dy = 0) {
     const sel = state.selectedListingId === l.id;
-    return `<button type="button" class="marker ${sel ? 'is-selected' : ''}" style="left:${x.toFixed(2)}px;top:${y.toFixed(2)}px" data-action="marker-select" data-id="${l.id}" data-fid="marker-${l.id}"
+    return `<button type="button" class="marker ${sel ? 'is-selected' : ''}" style="top:${dy}px" data-action="marker-select" data-id="${l.id}" data-fid="marker-${l.id}"
       aria-pressed="${sel}" aria-label="${esc(l.title)}, ${money(l.price)}, ${esc(l.area)}, approximate location">
       <span class="marker-capsule">${money(l.price)}</span>${sel ? `<span class="marker-pointer"><img src="assets/map/marker-pointer.svg" alt=""></span>` : ''}</button>`;
   }
-  function markers(list) {
-    if (!showsMarkers() || state.req) return '';   // no markers until results arrive
-    return markerGroups(list).map(g => {
-      if (g.items.length === 1) return markerHtml(g.items[0].l, g.x, g.y);
-      if (state.expandedCluster === g.key || g.items.some(p => p.l.id === state.selectedListingId)) {
-        return g.items.map((p, i) => markerHtml(p.l, g.x, g.y + (i - (g.items.length - 1) / 2) * 46)).join('');
+  const divIcon = html => L.divIcon({ className: 'lf-icon', html, iconSize: [0, 0] });
+  // Markers follow the filtered set on screen. Home before a category or query: circle only.
+  function syncMarkers() {
+    if (!lmap) return;
+    markerLayer.clearLayers();
+    if (!isDiscovery() || !showsMarkers() || state.req) return;
+    for (const g of markerGroups(shown())) {
+      const open = g.items.length === 1 || state.expandedCluster === g.key || g.items.some(p => p.l.id === state.selectedListingId);
+      if (open) {
+        g.items.forEach((p, i) => {
+          const dy = g.items.length === 1 ? 0 : (i - (g.items.length - 1) / 2) * 46;
+          const at = g.items.length === 1 ? p.l.latLng : [g.lat, g.lng];
+          L.marker(at, { icon: divIcon(markerHtml(p.l, dy)), interactive: false, keyboard: false, zIndexOffset: p.l.id === state.selectedListingId ? 1000 : 0 }).addTo(markerLayer);
+        });
+      } else {
+        L.marker([g.lat, g.lng], { icon: divIcon(`<button type="button" class="cluster" data-action="cluster-open" data-key="${g.key}" data-fid="cluster-${g.key}"
+          aria-label="${g.items.length} listings close together. Show them"><span class="cluster-count t-sub-e">${g.items.length}</span><span class="t-sub-e">listings</span></button>`), interactive: false, keyboard: false }).addTo(markerLayer);
       }
-      return `<button type="button" class="cluster" style="left:${g.x.toFixed(2)}px;top:${g.y.toFixed(2)}px" data-action="cluster-open" data-key="${g.key}" data-fid="cluster-${g.key}"
-        aria-label="${g.items.length} listings close together. Show them"><span class="cluster-count t-sub-e">${g.items.length}</span><span class="t-sub-e">listings</span></button>`;
-    }).join('');
+    }
   }
-  function markerPoint(id, list) {
-    const g = markerGroups(list).find(g => g.items.some(p => p.l.id === id));
-    if (!g) return null;
-    if (g.items.length === 1) return { x: g.x, y: g.y };
-    const i = g.items.findIndex(p => p.l.id === id);
-    return { x: g.x, y: g.y + (i - (g.items.length - 1) / 2) * 46 };
-  }
+  const markers = () => '';   // markers are map layers now (see syncMarkers)
 
   // ---------- Discovery screen ----------
 
@@ -388,6 +489,7 @@
       ? `<div class="sheet-controls is-home" style="align-items:stretch">
           <div class="handle-space"><div class="grabber" aria-hidden="true"></div></div>
           ${searchFieldIdle()}
+          ${continueEntry()}
           <div class="sheet-actions">${filtersBtn()}${unavailable('quiet', `${icon('saved-search')}<span>Saved searches</span>`, 'Saved searches')}</div>
           ${also ? `<p class="also-filtered" style="margin:0">${esc(also)}</p>` : ''}
         </div>`
@@ -399,6 +501,7 @@
           ${results ? searchFieldFilled() : searchFieldIdle()}
           <div class="sheet-actions">${filtersBtn()}${saveSearch()}</div>
           ${also ? `<p class="also-filtered" style="margin:0">${esc(also)}</p>` : ''}
+          ${savedLine()}
         </div>`;
     const summary = r ? { loading: 'Finding listings…', slow: 'Taking longer than usual', failed: 'Couldn’t load listings' }[r.status]
       : state.query ? `${plural(list.length, 'result')} · ${state.query}` : `${plural(list.length, 'listing')} · ${catLabel(state.category)}`;
@@ -429,6 +532,9 @@
       <div class="scroll-edge"></div>
       ${filtersRow()}
       <p class="map-label is-map-label">Approximate listing locations · ${state.radius}-mile search area</p>
+      ${mapControls()}
+      ${mapNotice()}
+      ${savedToast()}
       ${tabbar()}`;
   }
 
@@ -444,48 +550,98 @@
     return view === 'map' ? h - (158 + bottom) : top + 88;
   }
   const grabberLabel = () => state.view === 'map' ? 'Results sheet, map in view. Activate to show the list.' : 'Results sheet, list in view. Activate to show the map.';
-  function mapFrame() {
-    const { top } = insets();
-    const r = state.radius * D.PX_PER_MILE * PX;
-    const fit = (rt, rb) => +Math.min(1, Math.max(0.6, (rb - rt - 16) / (2 * r))).toFixed(4);
-    if (state.screen === 'home') { const rt = top + 52, rb = sheetTop() - 8; return { s: fit(rt, rb), cy: Math.round((rt + rb) / 2) }; }
-    if (state.view === 'list') return { s: 1, cy: top + 190.67 };
-    const rt = top + 52, rb = sheetTop('map') - 8, s = fit(rt, rb);
-    return { s, cy: s === 1 ? top + 320.67 : Math.round((rt + rb) / 2) };
-  }
   function applyFrame({ animate = true } = {}) {
-    const sheet = $('#dsheet'), w = $('.map-world');
-    if (!sheet || !w) return;
+    const sheet = $('#dsheet');
+    if (!sheet) return;
     sheet.classList.toggle('no-anim', !animate);
-    w.classList.toggle('no-anim', !animate);
     sheet.style.top = sheetTop() + 'px';
     sheet.classList.toggle('is-compact', state.view === 'map' && state.screen !== 'home');
     appEl.dataset.view = state.screen === 'home' ? 'home' : state.view;
     const g = $('[data-fid="grabber"]'); if (g) g.setAttribute('aria-label', grabberLabel());
-    const f = mapFrame();
-    w.style.top = (f.cy - loc().px[1] * PX).toFixed(2) + 'px';
-    w.style.setProperty('--s', f.s);
-    w.style.setProperty('--inv', (1 / f.s).toFixed(4));
-    if (f.s !== state.mapScale) { state.mapScale = f.s; const mk = w.querySelector('.markers'); if (mk) mk.innerHTML = markers(shown()); }
-    keepSelectionVisible();
+    syncMap();
+  }
+
+  // ---------- Interactive map (Leaflet + OpenStreetMap standard raster tiles) ----------
+  // One map instance for the whole session. Panning and zooming only change the view; the applied search (location,
+  // radius, filters) and the results never change from a gesture. The circle is a geographic overlay in metres.
+
+  const mapLayerEl = document.getElementById('map-layer');
+  let lmap = null, tiles = null, circleLayer = null, centerLayer = null, markerLayer = null;
+  const mapView = { key: null, userMoved: false, fitting: false, tileOk: false, tileErrors: 0 };
+  state.mapIssue = null;    // null | 'tiles' | 'script'
+  function initMap() {
+    if (!window.L) { state.mapIssue = 'script'; return; }
+    lmap = L.map('map', { zoomControl: false, attributionControl: true, zoomSnap: 0.25, wheelPxPerZoomLevel: 90, minZoom: 6, maxZoom: 17, inertia: true });
+    lmap.attributionControl.setPrefix(false);
+    // OpenStreetMap standard tiles: no key or account; attribution required; light use only (OSM tile usage policy).
+    tiles = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19,
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors'
+    }).addTo(lmap);
+    tiles.on('tileload', () => { mapView.tileOk = true; if (state.mapIssue === 'tiles') { state.mapIssue = null; refreshMapNotice(); } });
+    tiles.on('tileerror', () => { mapView.tileErrors++; if (!mapView.tileOk && mapView.tileErrors >= 4 && state.mapIssue !== 'tiles') { state.mapIssue = 'tiles'; refreshMapNotice(); announce('Map tiles didn’t load. The list still works.'); } });
+    const c = loc().latLng;
+    circleLayer = L.circle(c, { radius: state.radius * MILE_M, color: '#8610a8', weight: 1.5, opacity: 1, fillColor: '#8610a8', fillOpacity: 0.04, interactive: false }).addTo(lmap);
+    centerLayer = L.marker(c, { icon: L.divIcon({ className: 'lf-icon map-centre', html: '<img src="assets/map/search-center.svg" alt="">', iconSize: [0, 0] }), interactive: false, keyboard: false });
+    markerLayer = L.layerGroup().addTo(lmap);
+    lmap.setView(c, 9.5, { animate: false });
+    // Gestures that the person makes mark the view as theirs, so screen changes don't snap it back.
+    lmap.on('dragstart', () => { mapView.userMoved = true; });
+    lmap.on('zoomstart', () => { if (!mapView.fitting) mapView.userMoved = true; });
+    lmap.on('zoomend', () => syncMarkers());
+    // Tapping empty map clears a selection or open cluster (not a tap that ended a drag, or one on a marker).
+    let dragged = false;
+    lmap.on('dragend', () => { dragged = true; setTimeout(() => { dragged = false; }, 60); });
+    mapLayerEl.addEventListener('click', e => { if (dragged && e.target.closest('.marker, .cluster')) { e.stopPropagation(); e.preventDefault(); } }, true);
+    lmap.on('click', e => { if (dragged || (e.originalEvent && e.originalEvent.target.closest('.marker, .cluster'))) return; actions['map-bg'](); });
+    window.addEventListener('resize', () => lmap.invalidateSize({ pan: false }));
+  }
+  // Fit the applied search area into the part of the map not covered by controls or the sheet.
+  function fitSearchArea({ animate = false } = {}) {
+    if (!lmap) return;
+    const { top, h } = insets();
+    const sheetY = state.screen === 'home' ? sheetTop() : sheetTop('map');
+    mapView.fitting = true;
+    const done = () => { mapView.fitting = false; mapView.userMoved = false; };
+    if (animate) { lmap.once('moveend', done); setTimeout(() => { if (mapView.fitting) done(); }, 900); }   // no move → no moveend
+    lmap.fitBounds(circleLayer.getBounds(), { paddingTopLeft: [12, top + 52], paddingBottomRight: [12, Math.max(24, h - sheetY + 10)], animate, maxZoom: 13 });
+    if (!animate) done();
+  }
+  // Called on every discovery render: updates the circle and markers in place; re-frames only when the applied
+  // location or radius changed, or when the person hasn't moved the map and the visible area changed.
+  function syncMap() {
+    if (!lmap) return;
+    const c = loc().latLng, key = `${state.location}|${state.radius}`;
+    circleLayer.setLatLng(c).setRadius(state.radius * MILE_M);
+    centerLayer.setLatLng(c);
+    if (state.screen === 'home') centerLayer.remove(); else centerLayer.addTo(lmap);
+    const frame = `${state.screen === 'home' ? 'home' : 'sheet'}`;
+    if (key !== mapView.key) { mapView.key = key; mapView.frame = frame; fitSearchArea(); }
+    else if (frame !== mapView.frame) { mapView.frame = frame; if (!mapView.userMoved) fitSearchArea(); }
+    const { h } = insets();
+    mapLayerEl.style.setProperty('--attr-bottom', Math.max(4, h - sheetTop() + 6) + 'px');
+    syncMarkers();
   }
   function keepSelectionVisible() {
-    if (state.view !== 'map' || !state.selectedListingId) return;
-    const pt = markerPoint(state.selectedListingId, shown());
-    if (!pt) return;
+    if (!lmap || state.view !== 'map' || !state.selectedListingId) return;
+    const l = byId[state.selectedListingId]; if (!l) return;
     const { top, h, bottom } = insets();
-    const f = mapFrame(), W = appEl.clientWidth, c = loc().px;
-    const x = W / 2 + (pt.x - c[0] * PX) * f.s, y = f.cy + (pt.y - c[1] * PX) * f.s;
-    const minY = top + 44 + 48 + 52, maxY = h - (158 + bottom) - 112 - 16;
-    let { x: px, y: py } = state.pan;
-    if (y + py < minY || y + py > maxY) py = Math.round((minY + maxY) / 2 - y);
-    if (x + px < 64 || x + px > W - 64) px = Math.round(W / 2 - x);
-    if (px !== state.pan.x || py !== state.pan.y) { state.pan = { x: px, y: py }; applyPan(); }
+    lmap.panInside(l.latLng, { paddingTopLeft: [70, top + 150], paddingBottomRight: [70, (158 + bottom) + 130] });
   }
-  function applyPan() {
-    const w = $('.map-world'); if (!w) return;
-    w.style.setProperty('--pan-x', state.pan.x + 'px');
-    w.style.setProperty('--pan-y', state.pan.y + 'px');
+  function refreshMapNotice() { if (isDiscovery()) refresh(); }
+  function mapNotice() {
+    if (!state.mapIssue) return '';
+    return `<div class="map-notice" role="group" aria-labelledby="map-notice-title">
+      <p class="t-sub" style="margin:0" id="map-notice-title"><b>Map didn’t load.</b> <span class="c2">${state.mapIssue === 'script' ? 'The map isn’t available right now.' : 'Map tiles couldn’t be reached.'} The list still works.</span></p>
+      ${state.mapIssue === 'tiles' ? `<button type="button" class="map-retry" data-action="map-retry" data-fid="map-retry" aria-label="Retry map">Retry</button>` : ''}
+    </div>`;
+  }
+  function mapControls() {
+    return `<div class="map-controls" role="group" aria-label="Map controls">
+      <button type="button" class="glass-btn map-ctl" data-action="map-zoom-in" data-fid="map-zoom-in" aria-label="Zoom in">${icon('plus-map')}</button>
+      <button type="button" class="glass-btn map-ctl" data-action="map-zoom-out" data-fid="map-zoom-out" aria-label="Zoom out">${icon('minus-map')}</button>
+      <button type="button" class="map-reset" data-action="map-reset" data-fid="map-reset" aria-label="Reset map to the ${state.radius}-mile search area around ${esc(loc().label)}">Reset map</button>
+    </div>`;
   }
 
   let drag = null, suppressClick = false;
@@ -578,15 +734,29 @@
 
   // ---------- Item details ----------
 
+  // Price-drop alerts: offered on a saved listing (star on). Simulated; nothing is delivered.
+  function priceAlertCard(l, isSaved) {
+    if (!isSaved) return '';
+    const on = priceAlerts.includes(l.id);
+    return `<div class="price-alert">
+        <div class="price-alert-text"><span class="t-headline">${on ? 'Price-drop alerts on' : 'Price-drop alerts'}</span><span class="t-foot c2">${on ? 'You’ll get a notification if the price is lowered.' : 'Get a notification if the seller lowers the price.'}</span></div>
+        <button type="button" class="text-btn" data-action="price-alert-toggle" data-fid="price-alert" aria-pressed="${on}" aria-label="Price-drop alerts for this listing">${on ? 'Turn off' : 'Turn on'}</button>
+      </div>
+      ${on && l.priceWas ? `<button type="button" class="text-btn stop-updates" data-action="stop-updates" data-fid="stop-updates">Found your car? Stop updates</button>` : ''}`;
+  }
   function screenDetails() {
     const l = byId[state.details.id];
     if (sim.removedId === l.id) {
       return `<div class="details is-removed" role="dialog" aria-modal="true" aria-labelledby="removed-title">
         <div class="modal-toolbar"><button type="button" class="glass-btn" data-action="details-close" data-fid="details-close" aria-label="Close">${icon('xmark-glass')}</button></div>
         <div class="removed">
-          <h1 class="t-title3" id="removed-title" style="margin:0">This listing is no longer available.</h1>
+          ${state.details.fromSaved
+            ? `<h1 class="t-title3" id="removed-title" style="margin:0">This listing was removed by the seller.</h1>
+          <p class="t-sub c2" style="margin:0">Your saved search is kept. The other matching listings are still there.</p>
+          <button type="button" class="primary-btn" data-action="details-close" data-fid="removed-back">See matching results</button>`
+            : `<h1 class="t-title3" id="removed-title" style="margin:0">This listing is no longer available.</h1>
           <p class="t-sub c2" style="margin:0">Your search, filters and place in the results are kept.</p>
-          <button type="button" class="primary-btn" data-action="details-close" data-fid="removed-back">Back to results</button>
+          <button type="button" class="primary-btn" data-action="details-close" data-fid="removed-back">Back to results</button>`}
         </div>
       </div>`;
     }
@@ -619,8 +789,10 @@
         </div>
         <div class="title-block">
           <h1 class="t-title1" id="details-title" style="margin:0">${esc(title)}</h1>
-          <p class="t-sub c2" style="margin:0">Posted ${l.hours} hr ago${l.seller ? ` • By ${l.seller.toLowerCase()}` : ''}</p>
+          <p class="t-sub c2" style="margin:0">Posted ${ago(l)}${l.seller ? ` • By ${l.seller.toLowerCase()}` : ''}</p>
+          ${l.priceWas ? `<p class="t-sub-e price-drop-line" style="margin:0">Price lowered from ${money(l.priceWas)} on ${fmtDate(l.priceDropOn)}</p>` : ''}
         </div>
+        ${priceAlertCard(l, isSaved)}
         <div class="facts" role="group" aria-label="Seller-provided details">${rows.join('')}<p class="t-foot c2" style="margin:0">Seller-provided details</p></div>
         ${d.description ? `<div class="desc"><h2 class="t-title3" style="margin:0">Description</h2><p class="t-body" style="margin:0">${esc(d.description)}</p><p class="t-foot c2" style="margin:0">Seller’s text, shown as written</p></div>` : ''}
         <div class="pickup">
@@ -890,7 +1062,26 @@
       </div>`;
   }
 
-  const SHEETS = { category: sheetCategory, location: sheetLocation, radius: sheetRadius, price: sheetPrice, filters: sheetFilters, sort: menuSort };
+  // Save search (R1) and Manage saved search (R9).
+  const alertSeg = v => segmented('alerts', 'New-match alerts', ALERTS, v);
+  function sheetSave() {
+    return sheetFrame('Save this search', `<p class="t-foot c2" style="margin:0">Saves: ${esc(searchContext(criteria()))}</p>
+      <form class="filters-form" data-form="save-search" action="#" novalidate>${alertSeg(state.overlay.alerts)}<button type="submit" hidden tabindex="-1"></button></form>
+      <p class="t-foot c2" style="margin:0">Alerts are optional. Your search stays saved either way.</p>`,
+      { label: 'Close without saving', footer: `<button type="button" class="primary-btn" data-action="save-search-confirm" data-fid="save-confirm">Save search</button>` });
+  }
+  function sheetManage() {
+    const ss = savedSearches.find(x => x.id === state.overlay.id);
+    const alertIds = priceAlerts.filter(id => compute(ss.crit).some(l => l.id === id));
+    return sheetFrame('Saved search', `<p class="t-foot c2" style="margin:0">${esc(searchContext(ss.crit))}</p>
+      <form class="filters-form" data-form="manage-search" action="#" novalidate>${alertSeg(state.overlay.alerts)}<button type="submit" hidden tabindex="-1"></button></form>
+      <p class="t-foot c2" style="margin:0">Off pauses alerts. Your search stays saved until you remove it.${alertIds.map(id => ` Price-drop alerts for ${esc(byId[id].title)}: on (change on the listing).`).join('')}</p>
+      <p class="t-sub c2" style="margin:0">Found a car? Remove the search to stop all updates.</p>
+      <button type="button" class="text-btn is-destructive" data-action="manage-remove" data-fid="manage-remove">Remove saved search</button>`,
+      { label: 'Close without changes', footer: `<button type="button" class="primary-btn" data-action="manage-done" data-fid="manage-done">Done</button>` });
+  }
+
+  const SHEETS = { save: sheetSave, manage: sheetManage, category: sheetCategory, location: sheetLocation, radius: sheetRadius, price: sheetPrice, filters: sheetFilters, sort: menuSort };
   const isMenu = o => o && o.type === 'sort';
 
   // ---------- Rendering ----------
@@ -900,7 +1091,6 @@
     const keep = !resetScroll && isDiscovery() && appEl.dataset.screen && isDiscovery(appEl.dataset.screen);
     const listY = keep && prevList ? prevList.scrollTop : 0, filterX = keep && prevFilters ? prevFilters.scrollLeft : 0;
     const a = document.activeElement, hadFocus = a && screenEl.contains(a) ? (a.dataset.fid || (a.id ? '#' + a.id : null)) : null;
-    if (isDiscovery()) state.mapScale = mapFrame().s;
     screenEl.innerHTML = SCREENS[state.screen]();
     appEl.classList.toggle('on-home', state.screen === 'home');
     appEl.dataset.screen = state.screen;
@@ -909,7 +1099,8 @@
       const list = $('[data-scroll="list"]'), filters = $('.filters');
       if (list) list.scrollTop = listY;
       if (filters) filters.scrollLeft = filterX;
-    } else { delete appEl.dataset.view; }
+    } else { delete appEl.dataset.view; if (markerLayer) markerLayer.clearLayers(); }
+    appEl.dataset.screen = state.screen;
     if (overlay) renderOverlay();
     return hadFocus;
   }
@@ -1024,11 +1215,11 @@
 
   // ---------- Overlays ----------
 
-  function openOverlay(type, trigger) {
+  function openOverlay(type, trigger, extra = {}) {
     if (type === 'price') state.price.draft = { ...state.price.applied };     // drafts copy applied values
     if (type === 'filters') { state.extras.draft = { ...state.extras.applied }; state.price.draft = { ...state.price.applied }; }
     state.draftLocation = state.location; state.draftRadius = state.radius;
-    state.overlay = { type, focusReturn: trigger && trigger.dataset.fid, rect: trigger ? trigger.getBoundingClientRect() : null };
+    state.overlay = { type, focusReturn: trigger && trigger.dataset.fid, rect: trigger ? trigger.getBoundingClientRect() : null, ...extra };
     renderOverlay();
     if (type === 'sort') { trigger.setAttribute('aria-expanded', 'true'); (overlayEl.querySelector('[aria-checked="true"]') || overlayEl.querySelector('.menu-item')).focus(); return; }
     if (type === 'price' && !hasPrice()) { $('#price-max').focus(); return; }
@@ -1047,6 +1238,107 @@
     focusFid(fid);
   }
   function dismissOverlay() { state.overlay = null; renderOverlay(); }
+  function rerenderDetails(fid) {
+    const sc = $('.details-scroll'), y = sc ? sc.scrollTop : 0;
+    render({ overlay: false });
+    const n = $('.details-scroll'); if (n) n.scrollTop = y;
+    focusFid(fid);
+  }
+
+  // ---------- Saved searches (exploration · returning to a car search) ----------
+
+  let toastTimer = null;
+  function showSavedToast(id) {
+    state.savedToast = id; refresh();
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { state.savedToast = null; refresh(); }, 8000);
+  }
+  // Restore a saved search: query, category, location, radius and every applied filter. New matches are counted
+  // from when it was last viewed; viewing it now resets that point.
+  function openSavedSearch(ss, { focus = 'search-field' } = {}) {
+    const c = ss.crit;
+    state.savedView = { id: ss.id, newIds: newSince(ss).map(l => l.id), since: ss.lastViewedAt };
+    ss.lastViewedAt = Date.now(); persistSaved();
+    state.overlay = null; renderOverlay();
+    state.details = null; state.returnTo = null; state.searchReturn = null; state.savedToast = null;
+    state.query = c.query; setCategory(c.category);
+    state.location = c.location; state.radius = c.radius;
+    state.price.applied = { ...c.price }; state.price.draft = { ...c.price };
+    state.extras.applied = { ...noExtras(), ...c.extras }; state.extras.draft = { ...state.extras.applied };
+    showList(focus);
+    return ss;
+  }
+
+  // ---------- Example notifications (simulated; nothing is delivered) ----------
+
+  const notifEl = document.getElementById('notif');
+  let notif = null;
+  function showNotification(n) {
+    notif = n;
+    notifEl.innerHTML = `<div class="notif-scrim" data-action="notif-dismiss"></div>
+      <div class="notif-stack">
+        <button type="button" class="notif" data-action="notif-open" data-fid="notif" aria-label="Example notification. ${esc(n.title)}. ${esc(n.body)}. Open">
+          <span class="notif-icon" aria-hidden="true"></span>
+          <span class="notif-text"><span class="notif-app">Craigslist · now</span><b>${esc(n.title)}</b><span>${esc(n.body)}</span></span>
+        </button>
+        <p class="notif-caption">Example notification · delivery not implemented</p>
+      </div>`;
+    notifEl.hidden = false;
+    notifEl.querySelector('.notif').focus({ preventScroll: true });
+    announce(`Example notification: ${n.title}. ${n.body}`);
+  }
+  function hideNotification() { notif = null; notifEl.hidden = true; notifEl.innerHTML = ''; }
+  function openNotification() {
+    const n = notif; hideNotification();
+    if (!n) return;
+    if (n.kind === 'new') { const ss = savedSearches.find(x => x.id === n.ssId); if (ss) openSavedSearch(ss); return; }
+    // Price drop: the same saved listing, opened inside the saved search it belongs to (Close returns there).
+    const ss = savedSearches.find(x => compute(x.crit).some(l => l.id === n.id));
+    if (ss) openSavedSearch(ss);
+    else if (!isDiscovery()) { state.overlay = null; renderOverlay(); state.details = null; state.screen = listScreen(); render({ resetScroll: true }); }
+    const ids = compute().map(l => l.id);
+    state.returnTo = snapshot('card-' + n.id);
+    state.details = { id: n.id, ids: ids.includes(n.id) ? ids : [n.id], fromSaved: ss ? ss.id : null };
+    state.screen = 'details';
+    render({ overlay: false });
+    focusFid('details-close');
+  }
+
+  // Demo events (desktop "Saved-search demo" controls, URL ?demo=new-match|price-drop, or CL_PROTO.demo()).
+  const demoStatus = msg => { const el = document.getElementById('demo-status'); if (el) el.textContent = msg; };
+  function demoEvent(kind) {
+    if (kind === 'reset') {
+      demo = { newInventory: false, addedAt: 0, priceDrop: null }; applyDemo();
+      savedSearches = []; persistSaved(); priceAlerts = []; persistAlerts();
+      state.savedView = null; state.savedToast = null; hideNotification();
+      // Back to the default search area: Minneapolis 55401, 25 miles (never the device's location).
+      const moved = state.location !== 'mpls' || state.radius !== 25;
+      state.location = state.draftLocation = 'mpls'; state.radius = state.draftRadius = 25;
+      if (state.screen === 'details') rerenderDetails('details-close');
+      else if (moved && isDiscovery()) request({ fresh: true }); else refresh();
+      demoStatus('Demo reset: Minneapolis, 25 miles; no saved searches or alerts; original inventory and prices.');
+      return;
+    }
+    if (kind === 'new-match') {
+      demo.newInventory = true; demo.addedAt = Date.now(); applyDemo();
+      if (isDiscovery()) refresh();
+      const ss = savedSearches.find(x => compute(x.crit).some(l => l.id === 'L14'));
+      if (!ss) { demoStatus('Added a 2015 VW Golf in Golden Valley. No saved search matches it, so there is no notification.'); return; }
+      const n = newSince(ss).length;
+      if (ss.alerts === 'off') { demoStatus(`Added a 2015 VW Golf. Alerts are off for “${searchLabel(ss.crit)}”, so there is no notification; Home shows ${n} new.`); return; }
+      demoStatus(`Added a 2015 VW Golf. Showing the ${alertsLabel(ss.alerts).toLowerCase()} alert as an example notification.`);
+      showNotification({ kind: 'new', ssId: ss.id, title: 'New match for your saved search', body: `${searchLabel(ss.crit)}: ${plural(n, 'new listing')}` });
+      return;
+    }
+    if (kind === 'price-drop') {
+      demo.priceDrop = { id: 'L01', from: 8900, to: 8500, on: Date.now() }; applyDemo();
+      if (state.screen === 'details') rerenderDetails('details-close'); else if (isDiscovery()) refresh();
+      if (!priceAlerts.includes('L01')) { demoStatus('2016 VW Golf lowered to $8,500. Its price-drop alerts are off (save it, then turn them on in its details), so there is no notification.'); return; }
+      demoStatus('2016 VW Golf lowered to $8,500. Showing the price-drop alert as an example notification.');
+      showNotification({ kind: 'drop', id: 'L01', title: 'Price lowered: 2016 VW Golf', body: '$8,900 → $8,500 · Northeast' });
+    }
+  }
+
 
   // ---------- Price apply ----------
 
@@ -1188,7 +1480,8 @@
     'open-details'(el) {
       state.returnTo = snapshot(el.dataset.fid);
       const ids = shown().map(l => l.id);
-      state.details = { id: el.dataset.id, ids: ids.includes(el.dataset.id) ? ids : [el.dataset.id] };
+      const ss = matchedSaved();
+      state.details = { id: el.dataset.id, ids: ids.includes(el.dataset.id) ? ids : [el.dataset.id], fromSaved: ss ? ss.id : null };
       state.screen = 'details';
       render();
       focusFid('details-close');
@@ -1213,17 +1506,72 @@
       const id = state.details.id;
       saved = saved.includes(id) ? saved.filter(x => x !== id) : [...saved, id];
       store.set('saved-listings', saved);
-      const on = saved.includes(id), b = $('[data-fid="save-star"]');
-      b.innerHTML = icon(on ? 'star-fill' : 'star-outline');
-      b.setAttribute('aria-pressed', String(on));
-      announce(on ? 'Saved to Favorites' : 'Removed from Favorites');
+      const on = saved.includes(id);
+      if (!on && priceAlerts.includes(id)) { priceAlerts = priceAlerts.filter(x => x !== id); persistAlerts(); }
+      rerenderDetails('save-star');
+      announce(on ? 'Saved to Favorites. Price-drop alerts are available for this listing.' : 'Removed from Favorites');
     },
+    'price-alert-toggle'() {
+      const id = state.details.id, on = !priceAlerts.includes(id);
+      priceAlerts = on ? [...priceAlerts, id] : priceAlerts.filter(x => x !== id);
+      persistAlerts(); rerenderDetails('price-alert');
+      announce(on ? 'Price-drop alerts on' : 'Price-drop alerts off');
+    },
+    'stop-updates'() {
+      const id = state.details.id;
+      priceAlerts = priceAlerts.filter(x => x !== id); persistAlerts(); rerenderDetails('price-alert');
+      announce('Updates stopped for this listing');
+    },
+
+    // Saved searches (exploration)
+    'open-save'(el) { openOverlay('save', el, { alerts: 'off' }); },
+    'save-search-confirm'() {
+      const crit = criteria(), key = critKey(crit), now = Date.now();
+      const existing = savedSearches.find(x => critKey(x.crit) === key);
+      const ss = existing || { id: 'S' + now.toString(36), crit, savedAt: now, lastViewedAt: now };
+      ss.alerts = state.overlay.alerts;
+      savedSearches = [ss, ...savedSearches.filter(x => x !== ss)];
+      persistSaved();
+      state.savedView = { id: ss.id, newIds: [], since: now };
+      dismissOverlay();
+      showSavedToast(ss.id);
+      focusFid('save-btn');
+      announce(`Search saved. ${searchLabel(ss.crit)}. Alerts: ${alertsLabel(ss.alerts)}.`);
+    },
+    'open-manage'(el) {
+      const ss = matchedSaved() || savedSearches[0];
+      if (!ss) return;
+      openOverlay('manage', el, { id: ss.id, alerts: ss.alerts });
+    },
+    'manage-done'() {
+      const ss = savedSearches.find(x => x.id === state.overlay.id);
+      const changed = ss.alerts !== state.overlay.alerts;
+      ss.alerts = state.overlay.alerts; persistSaved();
+      closeOverlay(); refresh();
+      if (changed) announce(ss.alerts === 'off' ? 'Alerts paused. Your search stays saved.' : `Alerts: ${alertsLabel(ss.alerts)}`);
+    },
+    'manage-remove'() {
+      const id = state.overlay.id;
+      savedSearches = savedSearches.filter(x => x.id !== id); persistSaved();
+      if (state.savedView && state.savedView.id === id) state.savedView = null;
+      if (state.savedToast === id) state.savedToast = null;
+      dismissOverlay(); refresh();
+      if (!focusFid('save-btn')) focusFirst(screenEl);
+      announce('Saved search removed');
+    },
+    'continue-search'() { openSavedSearch(savedSearches[0]); },
+    'notif-open'() { openNotification(); },
+    'notif-dismiss'() { hideNotification(); },
 
     // Map
     'map-expand'() { if (!expandMapAvailable()) return; state.view = 'map'; render(); focusFid('map-collapse'); announce('Map in view'); },
     'map-collapse'() { state.view = 'list'; state.selectedListingId = null; state.expandedCluster = null; state.pan = { x: 0, y: 0 }; render(); focusFid('map-toggle'); announce('List in view'); },
+    'map-zoom-in'() { if (lmap) { mapView.userMoved = true; lmap.zoomIn(1); } },
+    'map-zoom-out'() { if (lmap) { mapView.userMoved = true; lmap.zoomOut(1); } },
+    'map-reset'() { fitSearchArea({ animate: true }); announce(`Map reset to the ${state.radius}-mile search area around ${loc().label}`); },
+    'map-retry'() { state.mapIssue = null; mapView.tileErrors = 0; refresh(); if (tiles) tiles.redraw(); },
     'marker-select'(el) {
-      state.selectedListingId = el.dataset.id; render(); focusFid('preview-open');
+      state.selectedListingId = el.dataset.id; render(); keepSelectionVisible(); focusFid('preview-open');
       const l = byId[el.dataset.id]; announce(`${l.title}, ${money(l.price)}, ${l.area}`);
     },
     'cluster-open'(el) { state.expandedCluster = el.dataset.key; render(); focusFid('marker-' + el.dataset.key.split('-')[0]); },
@@ -1299,6 +1647,8 @@
     if (f === 'search') { const i = $('#search-input'); if (!submitSearch(i.value)) i.focus(); }
     else if (f === 'price') actions['price-apply']();
     else if (f === 'filters') actions['filters-apply']();
+    else if (f === 'save-search') actions['save-search-confirm']();
+    else if (f === 'manage-search') actions['manage-done']();
     else if (f === 'location') {
       const list = locationMatches(state.overlay.locQuery);
       if (list.length === 1) { state.draftLocation = list[0].id; syncLocationUi(list[0].id); }
@@ -1332,6 +1682,11 @@
   });
   appEl.addEventListener('change', e => {
     const t = e.target;
+    if (state.overlay && ['save', 'manage'].includes(state.overlay.type) && t.name === 'alerts') {
+      state.overlay.alerts = t.value;
+      overlayEl.querySelectorAll('.seg').forEach(x => x.classList.toggle('is-on', x.querySelector('input').checked));
+      return;
+    }
     if (!state.overlay || state.overlay.type !== 'filters') return;
     const x = state.extras.draft;
     if (t.type === 'radio') { x[t.name] = t.value === '' ? null : (t.name === 'mileage' ? +t.value : t.value); syncFiltersUi(); }
@@ -1371,6 +1726,7 @@
       }
     }
     if (e.key !== 'Escape') return;
+    if (notif) { e.preventDefault(); hideNotification(); return; }
     if (o) { e.preventDefault(); closeOverlay(); }
     else if (state.screen === 'search') { e.preventDefault(); actions['search-cancel'](); }
     else if (state.screen === 'details') { e.preventDefault(); actions['details-close'](); }
@@ -1395,6 +1751,7 @@
       device.style.setProperty('--scale', Math.min(1, (window.innerHeight - 48) / 940).toFixed(3));
     }
     if (isDiscovery() && !drag) applyFrame({ animate: false });
+    if (lmap) lmap.invalidateSize({ pan: false });
   }
   if (window.visualViewport) { window.visualViewport.addEventListener('resize', fitViewport); window.visualViewport.addEventListener('scroll', fitViewport); }
   window.addEventListener('resize', fitViewport);
@@ -1420,12 +1777,22 @@
   if (reset) reset.addEventListener('click', () => { cancelRequests(); state = initialState(); sim.failArmed = sim.network === 'fail'; syncSimControls(); render({ resetScroll: true }); request({ fresh: true }); });
   syncSimControls();
 
+  document.querySelectorAll('[data-demo]').forEach(b => b.addEventListener('click', () => demoEvent(b.dataset.demo)));
+  if (['new-match', 'price-drop'].includes(params.get('demo'))) setTimeout(() => demoEvent(params.get('demo')), 1200);
+
   window.CL_PROTO = {
+    demo: demoEvent, get saved() { return JSON.parse(JSON.stringify({ savedSearches, priceAlerts, demo })); },
     get state() { return JSON.parse(JSON.stringify(state)); }, ids: () => shown().map(l => l.id), sim, milesFrom: id => milesFrom(byId[id]),
+    // Test hook: read the live map (one instance) without changing it.
+    map: () => lmap && { center: lmap.getCenter(), zoom: lmap.getZoom(), circle: { center: circleLayer.getLatLng(), radius: circleLayer.getRadius() }, containers: document.querySelectorAll('.leaflet-container').length, id: lmap._leaflet_id, userMoved: mapView.userMoved, touchZoom: lmap.touchZoom.enabled(), dragging: lmap.dragging.enabled(), issue: state.mapIssue,
+      metresPerPx: (() => { const c = lmap.getCenter(), p = lmap.latLngToContainerPoint(c); return lmap.distance(c, lmap.containerPointToLatLng([p.x + 100, p.y])) / 100; })(),
+      point: id => { const pt = lmap.latLngToContainerPoint(id ? byId[id].latLng : circleLayer.getLatLng()); return { x: pt.x, y: pt.y }; } },
+    latLng: id => byId[id] ? byId[id].latLng : loc(id).latLng,
     // Test hook: same effect as pressing a scenario button.
     setNetwork(n) { sim.network = n; sim.failArmed = n === 'fail'; syncSimControls(); }
   };
 
+  initMap();
   fitViewport();
   render({ resetScroll: true });
   request({ fresh: true });

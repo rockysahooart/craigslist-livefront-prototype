@@ -17,6 +17,7 @@ Prompt direction: an ordinary phone photo for a classified listing; private sell
 | L11-card.jpg | L11 2016 VW Jetta | Black 6th-gen Jetta sedan | Dealer · lot by a strip building | 10:2 |
 | L12-card.jpg | L12 2012 Honda Accord | Champagne 8th-gen Accord sedan, hazy headlights | Owner · suburban driveway, harsh sun | 11:2 |
 | L13-card.jpg | L13 Toyota Tacoma pickup | Dark green 2nd-gen Tacoma Access Cab, muddy | Owner · gravel driveway, wet autumn | 12:2 |
+| L14-card.jpg | L14 2015 VW Golf (exploration: new match) | Red Mk7 Golf hatchback, road grime | Owner · split-level driveway, Golden Valley | 13:2 |
 
 Not replaced:
 - **L02** keeps the designed "No photo" state.
