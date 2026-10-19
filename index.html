@@ -19,11 +19,20 @@
     <aside class="notes" aria-label="Reviewer notes">
       <h1>Prototype notes</h1>
       <ul>
-        <li><strong>Sample content.</strong> All listings are sample data. Condition, availability and safety are not verified, and messages to sellers aren’t sent.</li>
-        <li><strong>Illustrative geography.</strong> The map is a static image of the Twin Cities metro. The purple circle is the search radius at true scale (11.67 pt per mile). Listing locations are approximate neighbourhood points, not addresses. The map zooms out (to 60% at most) only to fit the circle, and shifts to keep a selected listing in view; it can’t be panned or zoomed by hand. The image reaches about 22 miles east, 26 west and 40 north and south of Minneapolis, so the 25-mile circle runs slightly past its east edge, and a 50-mile circle well past every edge.</li>
-        <li><strong>Results sheet.</strong> Drag the handle or sheet header, or tap the handle, to move between map, half and full list. Arrow keys work when the handle is focused.</li>
-        <li><strong>Outside scope.</strong> Favorites, Post, Account, and Chat are outside this prototype.</li>
+        <li><strong>Sample content.</strong> Listings are sample data. Condition, availability and safety aren’t verified.</li>
+        <li><strong>Illustrative geography.</strong> The map is a static image of the Twin Cities metro. The purple circle is the 25-mile search area at true scale; listing locations are approximate neighbourhoods. Home zooms out (to 60% at most) only to fit the circle.</li>
+        <li><strong>Results sheet.</strong> Drag the handle or sheet header, tap the handle, or use Expand map / Collapse map to switch between list and map.</li>
+        <li><strong>Unavailable.</strong> Favorites, Post, Account and Chat, plus Save search, Saved searches, Contact seller, Open in Maps, sort, voice, and the location and distance pickers.</li>
       </ul>
+      <h2 class="notes-h2">Simulate</h2>
+      <label for="sim-network">Network when applying a price</label>
+      <select id="sim-network">
+        <option value="normal">Normal</option>
+        <option value="slow">Slow (3 s)</option>
+        <option value="fail">Fail once, then Retry works</option>
+      </select>
+      <label class="check"><input type="checkbox" id="sim-removed"> 2016 VW Golf removed by its seller</label>
+      <button type="button" id="sim-reset">Restart from Home</button>
     </aside>
     <div class="device" id="device">
       <div class="app" id="app">
