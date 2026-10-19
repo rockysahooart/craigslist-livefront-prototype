@@ -1,7 +1,8 @@
-/* Craigslist iOS redesign — browser prototype (prototype update handoff).
-   One store for all screens. Discovery screens (Home, browsing, results) share one map and one results sheet
-   with two positions (list, map). Sheets edit drafts until Apply. The list count, cards and map markers always
-   come from the same filtered set. */
+/* Craigslist iOS redesign — browser prototype.
+   One store for all screens. Every list, count, map marker, preview and listing navigation reads the same filtered
+   set from compute(), which combines the query, location + proximity (real distance from the search centre),
+   category, price, seller type and the vehicle filters (year, mileage, make, model) with the sort order.
+   Sheets edit drafts; Apply commits; Close, Cancel or the scrim discards. */
 (function () {
   'use strict';
 
@@ -9,7 +10,7 @@
   const byId = Object.fromEntries(D.listings.map(l => [l.id, l]));
   const IMG = 'assets/icons/';
   const PX = 0.5104;                       // pt per metro-map image px
-  const SEARCH_LABEL = 'Search listings';  // accessible name, separate from the placeholder
+  const SEARCH_LABEL = 'Search listings';
   const UNAVAILABLE = 'not available in this prototype';
 
   const appEl = document.getElementById('app');
@@ -18,7 +19,7 @@
   const liveEl = document.getElementById('live');
   const device = document.getElementById('device');
 
-  // ---------- Reviewer simulation (set outside the app: desktop notes or URL ?network=slow|fail&removed=L01) ----------
+  // ---------- Reviewer simulation (desktop notes, or URL ?network=slow|fail&removed=L01) ----------
 
   const params = new URLSearchParams(location.search);
   const sim = {
@@ -35,31 +36,35 @@
     set(key, val) { try { localStorage.setItem('cl-proto-' + key, JSON.stringify(val)); } catch (_) { /* private mode */ } }
   };
   let saved = store.get('saved-listings', []).filter(id => byId[id]);
-  let recents = store.get('recents-v2', null) || [{ query: 'Cars', scope: { category: 'all' } }, ...D.recentSeed];
+  let recents = store.get('recents-v3', null) || D.recentSeed.slice();
 
-  // ---------- State ----------
+  // ---------- State (one shared filter state for every screen) ----------
 
   const noPrice = () => ({ min: null, max: null });
+  // Filters-sheet fields. Vehicle fields (year, mileage, make, model) apply only to Cars & trucks.
+  const noExtras = () => ({ seller: null, yearMin: null, yearMax: null, mileage: null, make: null, model: null });
   function initialState() {
     return {
-      screen: 'home',            // home | browse | results | search | details
+      screen: 'home',          // home | browse | results | search | details
       query: '',
-      category: 'all',           // all | cars-trucks
+      category: 'all',
+      location: 'mpls',
+      radius: 25,
+      sort: 'newest',
       price: { applied: noPrice(), draft: noPrice() },
-      seller: { applied: null, draft: null },     // null = All · Owner · Dealer
-      mileage: { applied: null, draft: null },    // null = Any · 100000 = under 100,000 mi
-      view: 'list',              // list | map
+      extras: { applied: noExtras(), draft: noExtras() },
+      view: 'list',            // list | map
       selectedListingId: null,
       expandedCluster: null,
       pan: { x: 0, y: 0 },
       mapScale: 1,
-      details: null,             // { id }
-      returnTo: null,            // { screen, view, listScrollY, filterRowScrollX, selectedListingId, ... }
+      details: null,           // { id, ids } — ids = the filtered set when details opened
+      returnTo: null,
       searchReturn: null,
-      overlay: null,             // { type, focusReturn }
-      loading: true,             // first load: skeleton cards, never an empty state
-      pending: null,             // { price, status: 'applying' | 'failed' } while a new price is applied
-      removed: []                // listings found to be removed, hidden from results
+      overlay: null,           // { type, focusReturn, rect }
+      loading: true,           // first load: skeleton cards
+      pending: null,           // { price, status } while a new price is applied
+      removed: []
     };
   }
   let state = initialState();
@@ -73,8 +78,15 @@
   const plural = (n, one, many = one + 's') => `${n} ${n === 1 ? one : many}`;
   const areaName = l => l.area === 'Northeast' ? 'Northeast Minneapolis' : l.area;
   const isDiscovery = (s = state.screen) => s === 'home' || s === 'browse' || s === 'results';
-  const catLabel = id => id === 'all' ? 'All categories' : 'Cars & trucks';
-  const scopeLine = () => `${catLabel(state.category)} · ${D.location.label} · ${D.radius} miles`;
+  const loc = (id = state.location) => D.locations.find(l => l.id === id);
+  function catLabel(id) {
+    if (id === 'all') return 'All categories';
+    const c = [...D.categories.forSale, ...D.categories.other].find(c => c.id === id);
+    return c ? c.label : id;
+  }
+  const isCars = (cat = state.category) => cat === 'cars-trucks';
+  const scopeLine = () => `${catLabel(state.category)} · ${loc().label} · ${state.radius} miles`;
+  const milesFrom = l => { const c = loc().px; return Math.hypot(l.mapPx[0] - c[0], l.mapPx[1] - c[1]) / D.PX_PER_MILE; };
 
   const hasPrice = (p = state.price.applied) => p.min != null || p.max != null;
   function priceLabel(p = state.price.applied) {
@@ -83,40 +95,64 @@
     if (p.min != null) return `From ${money(p.min)}`;
     return 'Any price';
   }
-  const vehicleFiltered = () => state.seller.applied != null || state.mileage.applied != null;
-  // n = 1 for a set price + 1 for seller ≠ All + 1 for mileage ≠ Any (location, radius, category never count).
-  const filterCount = () => (hasPrice() ? 1 : 0) + (state.seller.applied ? 1 : 0) + (state.mileage.applied ? 1 : 0);
-  function alsoFiltered() {
+  // Vehicle filters only count and apply in Cars & trucks.
+  const activeExtras = (x = state.extras.applied, cat = state.category) => isCars(cat) ? x : { ...noExtras(), seller: x.seller };
+  // Active additional filters: price, seller, year, mileage, make/model (one filter). Location, proximity and
+  // category never count.
+  function filterCount(price = state.price.applied, x = activeExtras()) {
+    return (hasPrice(price) ? 1 : 0) + (x.seller ? 1 : 0) + (x.yearMin != null || x.yearMax != null ? 1 : 0) + (x.mileage ? 1 : 0) + (x.make ? 1 : 0);
+  }
+  function yearLabel(x) {
+    if (x.yearMin != null && x.yearMax != null) return x.yearMin === x.yearMax ? `${x.yearMin}` : `${x.yearMin}–${x.yearMax}`;
+    if (x.yearMin != null) return `${x.yearMin} or newer`;
+    if (x.yearMax != null) return `${x.yearMax} or older`;
+    return '';
+  }
+  function alsoFiltered(x = activeExtras()) {
     const parts = [];
-    if (state.seller.applied) parts.push(`${state.seller.applied} only`);
-    if (state.mileage.applied) parts.push('under 100,000 mi');
+    if (x.seller) parts.push(`${x.seller} only`);
+    if (x.make) parts.push(x.model ? `${x.make} ${x.model}` : x.make);
+    if (x.yearMin != null || x.yearMax != null) parts.push(yearLabel(x));
+    if (x.mileage) parts.push('under 100,000 mi');
     return parts.length ? `Also filtered: ${parts.join(' · ')}` : '';
   }
 
   function words(s) { return s.toLowerCase().replace(/volkswagen/g, 'vw').replace(/[^a-z0-9]+/g, ' ').trim().split(' ').filter(Boolean); }
+  function inCategory(l, cat) {
+    if (cat === 'all') return true;
+    if (cat === 'all-for-sale') return D.forSaleIds.includes(l.category);
+    return l.category === cat;
+  }
 
-  // The one filtered set behind every count, card and marker.
-  function compute({ price = state.price.applied, seller = state.seller.applied, mileage = state.mileage.applied } = {}) {
-    let base;
-    if (!state.query && state.category === 'cars-trucks') base = D.browseIds.map(id => byId[id]);
-    else {
-      const q = words(state.query);
-      base = D.listings.filter(l => state.category === 'all' || l.category === state.category)
-        .filter(l => { const t = words(l.title); return q.every(w => t.some(tw => tw.startsWith(w))); });
-    }
-    return base
+  // The single filtered set behind every count, card, marker, preview and listing navigation.
+  // Missing values never satisfy a filter on that field: unknown year/mileage/seller are excluded while it's on.
+  function compute({ price = state.price.applied, extras = state.extras.applied } = {}) {
+    const x = activeExtras(extras);
+    const q = words(state.query);
+    const list = D.listings
       .filter(l => !state.removed.includes(l.id))
-      .filter(l => (price.min == null || l.price >= price.min) && (price.max == null || l.price <= price.max))
-      .filter(l => !seller || l.seller === seller)
-      .filter(l => !mileage || (l.miles != null && l.miles < mileage))
-      .sort((a, b) => a.minutes - b.minutes || a.id.localeCompare(b.id));
+      .filter(l => inCategory(l, state.category))
+      .filter(l => milesFrom(l) <= state.radius)                                    // proximity: real distance
+      .filter(l => { const t = words(l.title); return q.every(w => t.some(tw => tw.startsWith(w))); })
+      .filter(l => (price.min == null || l.price >= price.min) && (price.max == null || l.price <= price.max)) // inclusive
+      .filter(l => !x.seller || l.seller === x.seller)
+      .filter(l => x.yearMin == null || (l.year != null && l.year >= x.yearMin))
+      .filter(l => x.yearMax == null || (l.year != null && l.year <= x.yearMax))
+      .filter(l => !x.mileage || (l.miles != null && l.miles < x.mileage))           // "Under" is strict
+      .filter(l => !x.make || l.make === x.make)
+      .filter(l => !x.model || l.model === x.model);
+    const by = {
+      newest: (a, b) => a.minutes - b.minutes,
+      closest: (a, b) => milesFrom(a) - milesFrom(b),
+      'price-asc': (a, b) => a.price - b.price,
+      'price-desc': (a, b) => b.price - a.price
+    }[state.sort];
+    return list.sort((a, b) => by(a, b) || a.id.localeCompare(b.id));
   }
 
   const listScreen = () => state.query ? 'results' : (state.category === 'all' ? 'home' : 'browse');
-  const showsMarkers = () => !!state.query || state.category !== 'all';   // initial Home: circle only
+  const showsMarkers = () => !!state.query || state.category !== 'all';    // Home: circle only
   function announce(msg) { liveEl.textContent = ''; setTimeout(() => { liveEl.textContent = msg; }, 30); }
-
-  // Controls the spec keeps unavailable: visible, inert, announced.
   function unavailable(cls, inner, label, extra = '') {
     return `<button type="button" class="${cls} is-muted" aria-disabled="true" tabindex="-1" aria-label="${esc(label)}, ${UNAVAILABLE}" data-action="noop"${extra}>${inner}</button>`;
   }
@@ -133,14 +169,13 @@
     </nav>`;
   }
 
-  // Map world: supplied metro image at the shared scale, centred on 55401. Circle, markers and the centre mark live
-  // inside the world, so they stay anchored to the map when it is re-framed, zoomed to fit, panned or resized.
+  // Map world centred on the selected search location; circle radius = proximity at the shared scale.
   function mapBg(opts = {}) {
-    const c = D.location.px;
-    const r = D.radius * D.PX_PER_MILE * PX;
+    const c = loc().px;
+    const r = state.radius * D.PX_PER_MILE * PX;
     const cx = c[0] * PX, cy = c[1] * PX;
     return `<div class="map-bg ${opts.home ? 'is-home' : ''}" data-action="map-bg">
-      <div class="map-world" style="left:calc(50% - ${cx.toFixed(2)}px);top:calc(var(--top) - 59px - 208.65px);transform-origin:${cx.toFixed(2)}px ${cy.toFixed(2)}px;--pan-x:${state.pan.x}px;--pan-y:${state.pan.y}px;--s:${state.mapScale};--inv:${(1 / state.mapScale).toFixed(4)}">
+      <div class="map-world" style="left:calc(50% - ${cx.toFixed(2)}px);top:calc(var(--top) - 59px - 208.65px + ${((898 - c[1]) * PX).toFixed(2)}px);transform-origin:${cx.toFixed(2)}px ${cy.toFixed(2)}px;--pan-x:${state.pan.x}px;--pan-y:${state.pan.y}px;--s:${state.mapScale};--inv:${(1 / state.mapScale).toFixed(4)}">
         <img class="map-img" src="assets/map/metro-map.png" alt="">
         <svg class="map-circle" aria-hidden="true" width="${(2 * r).toFixed(2)}" height="${(2 * r).toFixed(2)}" viewBox="0 0 ${(2 * r).toFixed(2)} ${(2 * r).toFixed(2)}" style="left:${(cx - r).toFixed(2)}px;top:${(cy - r).toFixed(2)}px"><circle cx="${r.toFixed(2)}" cy="${r.toFixed(2)}" r="${r.toFixed(2)}"/></svg>
         ${opts.home ? '' : `<img class="map-center" src="assets/map/search-center.svg" alt="" style="left:${(cx - 9).toFixed(2)}px;top:${(cy - 9).toFixed(2)}px">`}
@@ -150,20 +185,14 @@
     <div class="map-edge"></div>`;
   }
 
-  // Filter pills. Default: white 90 %; applied: purple tint + 1 px inner purple border.
-  function pillDefault(label, { tag = false, action, fid, aria }) {
+  function pillDefault(label, { tag = false, action, fid, aria, disabled = false }) {
     const inner = `${tag ? icon('tag', 'ic-tag') : ''}<span>${esc(label)}</span>${icon('caret-down', 'ic-caret')}`;
-    return `<div class="pill"><button type="button" class="pill-edit inset-focus" data-action="${action}" data-fid="${fid}" aria-label="${esc(aria)}" aria-haspopup="dialog">${inner}</button></div>`;
+    return `<div class="pill"><button type="button" class="pill-edit inset-focus" data-action="${disabled ? 'noop' : action}" data-fid="${fid}" aria-label="${esc(aria)}"${disabled ? ' aria-disabled="true"' : ' aria-haspopup="dialog"'}>${inner}</button></div>`;
   }
-  // Applied "change" variant: caret, no ×. Without an action it is shown but its picker isn't built.
-  function pillChange(label, { tag = false, action, fid, aria }) {
+  function pillChange(label, { tag = false, action, fid, aria, disabled = false }) {
     const inner = `${tag ? icon('tag-purple', 'ic-tag') : ''}<span>${esc(label)}</span>${icon('caret-down-purple', 'ic-caret')}`;
-    const btn = action
-      ? `<button type="button" class="pill-edit inset-focus" data-action="${action}" data-fid="${fid}" aria-label="${esc(aria)}" aria-haspopup="dialog">${inner}</button>`
-      : `<button type="button" class="pill-edit inset-focus" data-action="noop" data-fid="${fid}" aria-disabled="true" aria-label="${esc(aria)}, ${UNAVAILABLE}">${inner}</button>`;
-    return `<div class="pill is-applied">${btn}</div>`;
+    return `<div class="pill is-applied"><button type="button" class="pill-edit inset-focus" data-action="${disabled ? 'noop' : action}" data-fid="${fid}" aria-label="${esc(aria)}"${disabled ? ' aria-disabled="true"' : ' aria-haspopup="dialog"'}>${inner}</button></div>`;
   }
-  // Applied "remove" variant (price only): label opens the sheet; separate 44 × 44 × clears the price.
   function pillRemove(label, { action, removeAction, fid, aria, removeAria }) {
     return `<div class="pill is-applied">
       <button type="button" class="pill-edit inset-focus" data-action="${action}" data-fid="${fid}" aria-label="${esc(aria)}" aria-haspopup="dialog"><span>${esc(label)}</span></button>
@@ -171,28 +200,19 @@
       <button type="button" class="pill-remove inset-focus" data-action="${removeAction}" data-fid="${fid}-remove" aria-label="${esc(removeAria)}">${icon('xmark-pill')}</button>
     </div>`;
   }
-
-  // One horizontally scrolling row. Order: location, radius, category, price.
+  // One horizontally scrolling row. Order: location, proximity, category, price.
   function filtersRow() {
+    const busy = !!state.pending || state.loading;
     const pills = [
-      pillChange(D.location.label, { fid: 'pill-location', aria: `Location: ${D.location.label} ${D.location.zip}` }),
-      pillChange(`${D.radius} miles`, { fid: 'pill-radius', aria: `Distance: within ${D.radius} miles` })
+      pillChange(loc().label, { action: 'open-location', fid: 'pill-location', aria: `Location: ${loc().label} ${loc().zip}. Change location`, disabled: busy }),
+      pillChange(`${state.radius} miles`, { action: 'open-radius', fid: 'pill-radius', aria: `Distance: within ${state.radius} miles. Change distance`, disabled: busy }),
+      state.category === 'all'
+        ? pillDefault('All categories', { tag: true, action: 'open-category', fid: 'pill-category', aria: 'Category: All categories. Change category', disabled: busy })
+        : pillChange(catLabel(state.category), { tag: true, action: 'open-category', fid: 'pill-category', aria: `Category: ${catLabel(state.category)}. Change category`, disabled: busy })
     ];
-    pills.push(state.category === 'all'
-      ? pillDefault('All categories', { tag: true, action: 'open-category', fid: 'pill-category', aria: 'Category: All categories. Change category' })
-      : pillChange(catLabel(state.category), { tag: true, action: 'open-category', fid: 'pill-category', aria: `Category: ${catLabel(state.category)}. Change category` }));
-    if (state.screen === 'results') {
-      if (state.pending) {
-        // While a new price applies, the row shows the previous context.
-        pills.push(hasPrice() ? pillChange(priceLabel(), { fid: 'pill-price', aria: `Price: ${priceLabel()}` }) : pillDefault('Any price', { action: 'noop', fid: 'pill-price', aria: 'Price: Any price' }).replace('data-action="noop"', 'data-action="noop" aria-disabled="true"'));
-      } else if (hasPrice() && vehicleFiltered()) {
-        pills.push(pillChange(priceLabel(), { fid: 'pill-price', aria: `Price: ${priceLabel()}` })); // changing price here isn't built
-      } else if (hasPrice()) {
-        pills.push(pillRemove(priceLabel(), { action: 'open-price', removeAction: 'price-remove', fid: 'pill-price', aria: `Price: ${priceLabel()}. Edit price`, removeAria: 'Remove price filter' }));
-      } else {
-        pills.push(pillDefault('Any price', { action: 'open-price', fid: 'pill-price', aria: 'Price: Any price. Set price' }));
-      }
-    }
+    if (hasPrice() && !busy) pills.push(pillRemove(priceLabel(), { action: 'open-price', removeAction: 'price-remove', fid: 'pill-price', aria: `Price: ${priceLabel()}. Edit price`, removeAria: 'Remove price filter' }));
+    else if (hasPrice()) pills.push(pillChange(priceLabel(), { fid: 'pill-price', aria: `Price: ${priceLabel()}`, disabled: true }));
+    else pills.push(pillDefault('Any price', { action: 'open-price', fid: 'pill-price', aria: 'Price: Any price. Set price', disabled: busy }));
     return `<div class="filters" role="group" aria-label="Quick filters">${pills.join('')}</div>`;
   }
 
@@ -204,28 +224,30 @@
       <span class="card-photo">${photo}<span class="price-badge">${money(l.price)}</span></span>
       <span class="card-text">
         <span class="card-title">${esc(l.title)}</span>
-        <span class="card-detail"><span>${esc(l.detail)}</span>${seller}</span>
+        <span class="card-detail"><span class="${l.miles == null && l.category === 'cars-trucks' ? 'c2' : ''}">${esc(l.detail)}</span>${seller}</span>
         <span class="card-meta">${l.hours} hr ago • ${esc(l.area)}</span>
       </span>
     </button>`;
   }
   const grid = (list, attrs = '') => `<ul class="grid"${attrs}>${list.map(l => `<li>${card(l)}</li>`).join('')}</ul>`;
   const skeletonGrid = () => `<ul class="grid skeleton" aria-hidden="true">${'<li><span class="sk-photo"></span><span class="sk-line w80"></span><span class="sk-line w60"></span><span class="sk-line w70"></span></li>'.repeat(4)}</ul>`;
-  const newest = () => unavailable('menu-btn', `<span>Newest</span>${icon('caret-down')}`, 'Sort: Newest');
   const spinner = () => '<span class="spinner" aria-hidden="true"></span>';
+  function sortBtn(enabled = true) {
+    const label = D.sorts.find(s => s.id === state.sort).label;
+    const inner = `<span>${label}</span>${icon('caret-down')}`;
+    return enabled
+      ? `<button type="button" class="menu-btn" data-action="open-sort" data-fid="sort-btn" aria-haspopup="menu" aria-expanded="false" aria-label="Sort: ${label}">${inner}</button>`
+      : `<button type="button" class="menu-btn" aria-disabled="true" data-action="noop" aria-label="Sort: ${label}">${inner}</button>`;
+  }
 
   function filtersBtn() {
     const n = filterCount();
     const label = `${icon('sliders')}<span>Filters${n ? ` (${n})` : ''}</span>`;
-    // Opens from the price-filtered results only.
-    if (state.screen === 'results' && hasPrice() && !state.pending) {
-      return `<button type="button" class="quiet" data-action="open-filters" data-fid="filters-btn" aria-haspopup="dialog">${label}</button>`;
-    }
-    return unavailable('quiet', label, `Filters${n ? `, ${n} active` : ''}`, ' data-fid="filters-btn"');
+    if (state.pending || state.loading) return `<button type="button" class="quiet" aria-disabled="true" data-action="noop" data-fid="filters-btn">${label}</button>`;
+    return `<button type="button" class="quiet" data-action="open-filters" data-fid="filters-btn" aria-haspopup="dialog" aria-label="Filters${n ? `, ${n} active` : ''}">${label}</button>`;
   }
   const saveSearch = () => unavailable('quiet', `${icon('saved-search')}<span>Save search</span>`, 'Save search');
-  const placeholder = () => state.category === 'all' ? 'Try searching ‘cars’' : 'Search cars & trucks';
-
+  const placeholder = () => state.category === 'all' ? 'Try searching ‘cars’' : `Search ${catLabel(state.category).toLowerCase()}`;
   function searchFieldIdle() {
     return `<div class="field has-main">
       <button type="button" class="field-main" data-action="open-search" data-fid="search-field" aria-label="${SEARCH_LABEL}">
@@ -242,23 +264,44 @@
       <button type="button" class="field-clear" data-action="results-clear" data-fid="results-clear" aria-label="Clear search">${icon('xmark-circle-fill')}</button>
     </div>`;
   }
-  const expandMapAvailable = () => !vehicleFiltered() && !state.pending && !state.loading;
+  const expandMapAvailable = () => !state.pending && !state.loading;
   function expandMapBtn() {
     const inner = `${icon('map')}<span>Expand map</span>`;
     return expandMapAvailable()
       ? `<button type="button" class="quiet map-toggle" data-action="map-expand" data-fid="map-toggle">${inner}</button>`
-      : unavailable('quiet map-toggle', inner, 'Expand map', ' data-fid="map-toggle"');
+      : `<button type="button" class="quiet map-toggle" aria-disabled="true" data-action="noop" data-fid="map-toggle">${inner}</button>`;
   }
 
-  // List body: first-load skeleton, applying/failed price, results, or no results.
+  // No matches: keep query and pills visible; offer edit and clear paths for whatever is narrowing the list.
+  function emptyState() {
+    const x = activeExtras();
+    const extrasOn = filterCount(noPrice(), x) > 0;
+    const actionsHtml = [];
+    if (hasPrice()) actionsHtml.push(`<button type="button" class="primary-btn" data-action="price-remove" data-fid="recover-btn">Remove price filter</button>`);
+    if (extrasOn) {
+      actionsHtml.push(`<button type="button" class="${hasPrice() ? 'secondary-btn' : 'primary-btn'}" data-action="open-filters" data-fid="${hasPrice() ? 'recover-edit' : 'recover-btn'}">Edit filters</button>`);
+      actionsHtml.push(`<button type="button" class="text-btn" data-action="extras-clear-applied" data-fid="recover-clear">Clear filters</button>`);
+    }
+    if (!hasPrice() && !extrasOn && state.radius < 50) actionsHtml.push(`<button type="button" class="primary-btn" data-action="open-radius" data-fid="recover-btn">Change distance</button>`);
+    if (!actionsHtml.length) actionsHtml.push(`<button type="button" class="primary-btn" data-action="open-search" data-fid="recover-btn">Edit search</button>`);
+    const why = hasPrice() && !extrasOn ? 'Try increasing your maximum price or removing the price filter.'
+      : extrasOn ? 'Try editing or clearing your filters.'
+      : state.radius < 50 ? `Nothing within ${state.radius} miles of ${loc().label}. Try a larger distance.` : 'Check the spelling or try different words.';
+    return `<div class="no-results">
+      <h2 class="t-headline" style="margin:0" id="results-count">No listings match your search.</h2>
+      <p class="t-sub c2" style="margin:0">${esc(why)}</p>
+      <div class="recovery">${actionsHtml.join('')}</div>
+    </div>`;
+  }
+
   function listBody(list) {
     const isResults = state.screen === 'results';
     if (state.loading) {
-      return `<div class="list-header status-row" role="status"><span class="status-text">${spinner()}<span class="t-sub-e">Loading listings…</span></span>${newest()}</div>${skeletonGrid()}`;
+      return `<div class="list-header status-row" role="status"><span class="status-text">${spinner()}<span class="t-sub-e">Loading listings…</span></span>${sortBtn(false)}</div>${skeletonGrid()}`;
     }
     const prevLabel = `Previous results · ${priceLabel()} · ${plural(list.length, 'listing')}`;
     if (state.pending && state.pending.status === 'applying') {
-      return `<div class="list-header status-row" role="status"><span class="status-text">${spinner()}<span class="t-sub-e">Applying ${esc(priceLabel(state.pending.price))}…</span></span>${newest()}</div>
+      return `<div class="list-header status-row" role="status"><span class="status-text">${spinner()}<span class="t-sub-e">Applying ${esc(priceLabel(state.pending.price))}…</span></span>${sortBtn(false)}</div>
         <p class="t-sub c2 prev-label" style="margin:0">${esc(prevLabel)}</p>
         ${grid(list, ' data-dim="true" inert')}`;
     }
@@ -269,30 +312,19 @@
           <p class="t-sub c2" style="margin:0">Your search is kept. Showing previous results at ${esc(priceLabel())}. Retry applies ${esc(want)} again.</p>
           <button type="button" class="primary-btn" data-action="retry-apply" data-fid="retry-btn">Retry</button>
         </div>
-        <div class="list-header"><h2 class="t-sub-e" style="margin:0" id="results-count">${esc(prevLabel)}</h2>${newest()}</div>
+        <div class="list-header"><h2 class="t-sub-e" style="margin:0" id="results-count">${esc(prevLabel)}</h2>${sortBtn(false)}</div>
         ${grid(list)}`;
     }
-    if (!list.length) {
-      if (isResults && hasPrice()) {
-        return `<div class="no-results">
-          <h2 class="t-headline" style="margin:0" id="results-count">No listings match your search.</h2>
-          <p class="t-sub c2" style="margin:0">Try increasing your maximum price or removing the price filter.</p>
-          <button type="button" class="primary-btn" data-action="price-remove" data-fid="recover-btn">Remove price filter</button>
-        </div>`;
-      }
-      return `<div class="no-results"><h2 class="t-headline" style="margin:0" id="results-count">No listings match your search.</h2>
-        <p class="t-sub c2" style="margin:0">Check the spelling or try different words.</p></div>`;
-    }
+    if (!list.length) return emptyState();
     const header = isResults
       ? `<h2 class="t-headline" style="margin:0" id="results-count">${plural(list.length, 'result')}</h2>`
-      : `<h2 class="t-sub c2" style="margin:0" id="results-count">Listings within ${D.radius} miles</h2>`;
-    return `<div class="list-header">${header}${newest()}</div>${grid(list)}`;
+      : `<h2 class="t-sub c2" style="margin:0" id="results-count">${plural(list.length, 'listing')} within ${state.radius} miles</h2>`;
+    return `<div class="list-header">${header}${sortBtn()}</div>${grid(list)}`;
   }
 
   // ---------- Markers ----------
 
   function markerGroups(list, k = state.mapScale) {
-    // Seed-based grouping in a fixed ID order; distances measured on screen.
     const groups = [];
     for (const l of list.slice().sort((a, b) => a.id.localeCompare(b.id))) {
       const p = { l, x: l.mapPx[0] * PX, y: l.mapPx[1] * PX };
@@ -317,7 +349,6 @@
     if (!showsMarkers() || state.loading) return '';
     return markerGroups(list).map(g => {
       if (g.items.length === 1) return markerHtml(g.items[0].l, g.x, g.y);
-      // A tapped cluster (or one holding the selection) spreads into its price markers.
       if (state.expandedCluster === g.key || g.items.some(p => p.l.id === state.selectedListingId)) {
         return g.items.map((p, i) => markerHtml(p.l, g.x, g.y + (i - (g.items.length - 1) / 2) * 46)).join('');
       }
@@ -340,20 +371,22 @@
     const home = state.screen === 'home';
     const results = state.screen === 'results';
     const sel = state.view === 'map' && state.selectedListingId && list.find(l => l.id === state.selectedListingId);
+    const also = !state.pending && !state.loading ? alsoFiltered() : '';
     const controls = home
       ? `<div class="sheet-controls is-home" style="align-items:stretch">
           <div class="handle-space"><div class="grabber" aria-hidden="true"></div></div>
           ${searchFieldIdle()}
           <div class="sheet-actions">${filtersBtn()}${unavailable('quiet', `${icon('saved-search')}<span>Saved searches</span>`, 'Saved searches')}</div>
+          ${also ? `<p class="also-filtered" style="margin:0">${esc(also)}</p>` : ''}
         </div>`
       : `<div class="sheet-controls">
           <div class="sheet-header" data-drag>
-            ${results ? `<p class="t-sub c2 header-scope" style="margin:0">${esc(scopeLine())}</p>` : `<h1 class="t-headline" id="browse-title" style="margin:0">Cars &amp; trucks</h1>`}
+            ${results ? `<p class="t-sub c2 header-scope" style="margin:0">${esc(scopeLine())}</p>` : `<h1 class="t-headline" id="browse-title" style="margin:0">${esc(catLabel(state.category))}</h1>`}
             ${expandMapBtn()}
           </div>
           ${results ? searchFieldFilled() : searchFieldIdle()}
           <div class="sheet-actions">${filtersBtn()}${saveSearch()}</div>
-          ${results && vehicleFiltered() && !state.pending ? `<p class="also-filtered" style="margin:0">${esc(alsoFiltered())}</p>` : ''}
+          ${also ? `<p class="also-filtered" style="margin:0">${esc(also)}</p>` : ''}
         </div>`;
     const summary = state.query ? `${plural(list.length, 'result')} · ${state.query}` : `${plural(list.length, 'listing')} · ${catLabel(state.category)}`;
     const preview = sel ? `<div class="preview" role="group" aria-label="Selected listing">
@@ -368,7 +401,7 @@
         <button type="button" class="glass-btn" data-action="preview-dismiss" data-fid="preview-dismiss" aria-label="Dismiss preview">${icon('xmark-glass')}</button>
       </div>` : '';
     return `${mapBg({ home, markers: markers(list) })}
-      <section class="sheet dsheet surface-sheet" id="dsheet" aria-label="${home ? 'Listings near Minneapolis' : 'Results'}">
+      <section class="sheet dsheet surface-sheet" id="dsheet" aria-label="${home ? `Listings near ${esc(loc().label)}` : 'Results'}">
         ${home ? '' : `<button type="button" class="grabber-btn" data-action="grabber" data-drag data-fid="grabber" aria-label="${grabberLabel()}"></button>`}
         <div class="sheet-compact" data-drag>
           <h2 class="t-sub-e" style="margin:0" id="summary">${esc(summary)}</h2>
@@ -382,35 +415,29 @@
       ${preview}
       <div class="scroll-edge"></div>
       ${filtersRow()}
-      <p class="map-label is-map-label">Approximate listing locations · ${D.radius}-mile search area</p>
+      <p class="map-label is-map-label">Approximate listing locations · ${state.radius}-mile search area</p>
       ${tabbar()}`;
   }
 
-  // ---------- Sheet positions: list (147) and map (sheet 192 tall); Home fixed at 448 ----------
+  // ---------- Sheet positions and map framing ----------
 
   function insets() {
-    const probe = document.getElementById('inset-probe'); // top: var(--top), height: var(--bottom)
+    const probe = document.getElementById('inset-probe');
     return { top: probe.offsetTop, bottom: probe.offsetHeight, h: appEl.clientHeight };
   }
   function sheetTop(view = state.view) {
     const { top, bottom, h } = insets();
-    if (state.screen === 'home') return Math.min(top + 389, h - 420);   // 448 on 932
-    return view === 'map' ? h - (158 + bottom) : top + 88;               // 740 / 147 on 932
+    if (state.screen === 'home') return Math.min(top + 389, h - 420);
+    return view === 'map' ? h - (158 + bottom) : top + 88;
   }
   const grabberLabel = () => state.view === 'map' ? 'Results sheet, map in view. Activate to show the list.' : 'Results sheet, list in view. Activate to show the map.';
-
-  // Map framing. Home fits the whole 25-mile circle above its sheet (zooming out, never below 60 %); the list and
-  // map views use the handoff scale (S03 and M1 framing) unless the circle wouldn't fit.
   function mapFrame() {
     const { top } = insets();
-    const r = D.radius * D.PX_PER_MILE * PX;
-    if (state.screen === 'home') {
-      const rt = top + 52, rb = sheetTop() - 8;
-      return { s: +Math.min(1, Math.max(0.6, (rb - rt - 16) / (2 * r))).toFixed(4), cy: Math.round((rt + rb) / 2) };
-    }
+    const r = state.radius * D.PX_PER_MILE * PX;
+    const fit = (rt, rb) => +Math.min(1, Math.max(0.6, (rb - rt - 16) / (2 * r))).toFixed(4);
+    if (state.screen === 'home') { const rt = top + 52, rb = sheetTop() - 8; return { s: fit(rt, rb), cy: Math.round((rt + rb) / 2) }; }
     if (state.view === 'list') return { s: 1, cy: top + 190.67 };
-    const rt = top + 52, rb = sheetTop('map') - 8;
-    const s = +Math.min(1, Math.max(0.6, (rb - rt - 16) / (2 * r))).toFixed(4);
+    const rt = top + 52, rb = sheetTop('map') - 8, s = fit(rt, rb);
     return { s, cy: s === 1 ? top + 320.67 : Math.round((rt + rb) / 2) };
   }
   function applyFrame({ animate = true } = {}) {
@@ -423,26 +450,20 @@
     appEl.dataset.view = state.screen === 'home' ? 'home' : state.view;
     const g = $('[data-fid="grabber"]'); if (g) g.setAttribute('aria-label', grabberLabel());
     const f = mapFrame();
-    w.style.top = (f.cy - D.location.px[1] * PX).toFixed(2) + 'px';
+    w.style.top = (f.cy - loc().px[1] * PX).toFixed(2) + 'px';
     w.style.setProperty('--s', f.s);
     w.style.setProperty('--inv', (1 / f.s).toFixed(4));
     if (f.s !== state.mapScale) { state.mapScale = f.s; const mk = w.querySelector('.markers'); if (mk) mk.innerHTML = markers(compute()); }
     keepSelectionVisible();
   }
-  function setView(view, opts) {
-    state.view = view;
-    if (view === 'list') { state.pan = { x: 0, y: 0 }; applyPan(); }
-    applyFrame(opts);
-  }
-  // Keep the selected marker visible between the controls and the preview by shifting the static map.
   function keepSelectionVisible() {
     if (state.view !== 'map' || !state.selectedListingId) return;
     const pt = markerPoint(state.selectedListingId, compute());
     if (!pt) return;
     const { top, h, bottom } = insets();
-    const f = mapFrame(), W = appEl.clientWidth, c = D.location.px;
+    const f = mapFrame(), W = appEl.clientWidth, c = loc().px;
     const x = W / 2 + (pt.x - c[0] * PX) * f.s, y = f.cy + (pt.y - c[1] * PX) * f.s;
-    const minY = top + 44 + 48 + 52, maxY = h - (158 + bottom) - 112 - 16;  // above the floating preview
+    const minY = top + 44 + 48 + 52, maxY = h - (158 + bottom) - 112 - 16;
     let { x: px, y: py } = state.pan;
     if (y + py < minY || y + py > maxY) py = Math.round((minY + maxY) / 2 - y);
     if (x + px < 64 || x + px > W - 64) px = Math.round(W / 2 - x);
@@ -454,13 +475,12 @@
     w.style.setProperty('--pan-y', state.pan.y + 'px');
   }
 
-  // Drag the grabber or sheet header between the two positions; listings scroll on their own.
   let drag = null, suppressClick = false;
   const zoomFactor = () => { const r = appEl.getBoundingClientRect(); return r.height / appEl.offsetHeight || 1; };
   appEl.addEventListener('pointerdown', e => {
     const zone = e.target.closest('[data-drag]'), sheet = $('#dsheet');
     if (!zone || !sheet || !sheet.contains(zone) || state.overlay || state.screen === 'home') return;
-    const ctl = e.target.closest('button, a, input');
+    const ctl = e.target.closest('button, a, input, select');
     if (ctl && !ctl.classList.contains('grabber-btn')) return;
     drag = { id: e.pointerId, y0: e.clientY, top0: parseFloat(sheet.style.top), moved: false, zone };
   });
@@ -470,7 +490,7 @@
     if (!drag.moved && Math.abs(dy) < 6) return;
     const sheet = $('#dsheet');
     if (!drag.moved) {
-      if (!expandMapAvailable() && state.view === 'list') { drag = null; return; }   // map view unavailable here
+      if (!expandMapAvailable() && state.view === 'list') { drag = null; return; }
       drag.moved = true; try { drag.zone.setPointerCapture(e.pointerId); } catch (_) { /* ignore */ }
       sheet.classList.add('is-dragging');
     }
@@ -489,7 +509,7 @@
     sheet.classList.remove('is-dragging');
     const top = parseFloat(sheet.style.top), lo = sheetTop('list'), hi = sheetTop('map');
     const view = top - lo > (hi - lo) / 2 ? 'map' : 'list';
-    if (view === 'list') state.selectedListingId = null, state.expandedCluster = null;
+    if (view === 'list') { state.selectedListingId = null; state.expandedCluster = null; state.pan = { x: 0, y: 0 }; }
     state.view = view;
     render();
     announce(view === 'map' ? 'Map in view' : 'List in view');
@@ -500,19 +520,21 @@
 
   // ---------- Search entry ----------
 
+  function recentScopeText(sc = {}) {
+    const parts = [];
+    if (sc.category && sc.category !== 'cars-trucks' && sc.category !== 'all') parts.push(catLabel(sc.category));
+    if (sc.location && sc.location !== state.location) parts.push(loc(sc.location).label);
+    if (sc.radius && sc.radius !== state.radius) parts.push(`${sc.radius} miles`);
+    if (parts.length && !parts.includes(loc(sc.location || state.location).label)) parts.splice(1, 0, loc(sc.location || state.location).label);
+    if (sc.price && sc.price.max != null) parts.push(`Up to ${money(sc.price.max)}`);
+    return parts.join(' · ');
+  }
   function screenSearch() {
     const rows = recents.map((r, i) => {
-      const sc = r.scope || {};
-      const title = r.query || 'Browse cars & trucks';
-      // Query first; scope only when it differs from the current one.
-      let sub = '';
-      if (sc.category === 'furniture') sub = `Furniture · ${D.location.label} · ${sc.radius || D.radius} miles`;
-      else if (sc.price && sc.price.max != null) sub = `Up to ${money(sc.price.max)}`;
-      else if (sc.category && sc.category !== state.category && r.query && sc.category !== 'all') sub = catLabel(sc.category);
+      const title = r.query || `Browse ${catLabel((r.scope && r.scope.category) || 'cars-trucks').toLowerCase()}`;
+      const sub = recentScopeText(r.scope);
       const inner = `${icon('clock')}<span class="recent-text"><span class="t-headline">${esc(title)}</span>${sub ? `<span class="t-sub c2">${esc(sub)}</span>` : ''}</span>`;
-      return `<li>${r.unavailable
-        ? unavailable('recent-row', inner, `Recent search: ${title}${sub ? ', ' + sub : ''}`)
-        : `<button type="button" class="recent-row inset-focus" data-action="search-recent" data-index="${i}" aria-label="Recent search: ${esc(title)}${sub ? ', ' + esc(sub) : ''}">${inner}</button>`}</li>`;
+      return `<li><button type="button" class="recent-row inset-focus" data-action="search-recent" data-index="${i}" aria-label="Recent search: ${esc(title)}${sub ? ', ' + esc(sub) : ''}">${inner}</button></li>`;
     }).join('');
     return `${mapBg({ home: true })}
       <section class="sheet is-search surface-sheet" aria-labelledby="search-title">
@@ -557,9 +579,9 @@
     }
     const d = D.details[l.id] || {};
     const title = d.title || l.title;
-    const isCar = l.miles != null;
+    const isCar = l.category === 'cars-trucks';
     const facts = isCar
-      ? D.factLabels.map(k => [k, (d.facts && d.facts[k]) || (k === 'Mileage' ? l.detail : null)])
+      ? D.factLabels.map(k => [k, (d.facts && d.facts[k]) || (k === 'Mileage' && l.miles != null ? l.detail : null)])
       : [['Details', l.detail], ['Condition', null]];
     const rows = [];
     for (let i = 0; i < facts.length; i += 2) {
@@ -567,6 +589,8 @@
     }
     const count = d.photoCount || 1;
     const isSaved = saved.includes(l.id);
+    const { ids } = state.details;
+    const idx = ids.indexOf(l.id);
     const pickup = d.pickupMap
       ? `<img class="pm-img" src="assets/map/pickup-map.png" alt="Map of the approximate pickup area in Northeast Minneapolis">`
       : `<img class="pm-metro" src="assets/map/metro-map.png" alt="Map of the approximate pickup area in ${esc(areaName(l))}" style="left:calc(50% - ${(l.mapPx[0] * PX).toFixed(2)}px);top:${(75 - l.mapPx[1] * PX).toFixed(2)}px">`;
@@ -599,6 +623,11 @@
         <button type="button" class="glass-btn" data-action="details-close" data-fid="details-close" aria-label="Close">${icon('xmark-glass')}</button>
         <button type="button" class="glass-btn" data-action="toggle-save" data-fid="save-star" aria-pressed="${isSaved}" aria-label="Save to Favorites">${icon(isSaved ? 'star-fill' : 'star-outline')}</button>
       </div>
+      ${ids.length > 1 ? `<div class="listing-nav">
+        <button type="button" class="glass-btn" data-action="details-step" data-dir="-1" data-fid="details-prev" aria-label="Previous listing" ${idx <= 0 ? 'disabled' : ''}>${icon('chevron-left')}</button>
+        <span class="t-sub-e" aria-live="polite">Listing ${idx + 1} of ${ids.length}</span>
+        <button type="button" class="glass-btn" data-action="details-step" data-dir="1" data-fid="details-next" aria-label="Next listing" ${idx >= ids.length - 1 ? 'disabled' : ''}>${icon('chevron-right')}</button>
+      </div>` : ''}
       <div class="contact-fade"></div>
       <div class="contact">
         <p class="t-sub c2" style="margin:0">Confirm availability and the meeting location with the seller. Inspect the ${isCar ? 'vehicle' : 'item'} before paying.</p>
@@ -609,7 +638,7 @@
 
   const SCREENS = { home: screenDiscovery, browse: screenDiscovery, results: screenDiscovery, search: screenSearch, details: screenDetails };
 
-  // ---------- Sheets ----------
+  // ---------- Sheets and menus ----------
 
   function sheetFrame(title, body, { cls = 'psheet' } = {}) {
     return `<div class="scrim anim-fade" data-action="sheet-close"></div>
@@ -622,18 +651,16 @@
         <div class="sheet-body">${body}</div>
       </div>`;
   }
+  function crow({ action, id, label, selected, chevron, last, sub, disabled }) {
+    const inner = `<span class="crow-label">${esc(label)}${sub ? ` <span class="crow-sub">${esc(sub)}</span>` : ''}</span>${selected ? icon('checkmark', 'ic-check') : ''}${chevron ? icon('chevron', 'ic-chevron') : ''}`;
+    const cls = `crow t-body ${selected ? 'is-selected' : ''} ${last ? 'no-sep' : ''}`;
+    if (disabled) return `<li>${unavailable(cls, inner, label)}</li>`;
+    return `<li><button type="button" class="${cls} inset-focus" data-action="${action}" data-id="${esc(id)}" aria-current="${!!selected}">${inner}</button></li>`;
+  }
 
-  // Category picker: Cars & trucks works; the selected row (or Close) means no change; other categories aren't built.
+  // Category picker: every for-sale category works on the sample data; sections with subcategories aren't built.
   function sheetCategory() {
-    const row = (c, last) => {
-      const selected = c.id === state.category;
-      const inner = `<span class="crow-label">${esc(c.label)}</span>${selected ? icon('checkmark', 'ic-check') : ''}${c.chevron ? icon('chevron', 'ic-chevron') : ''}`;
-      const cls = `crow t-body ${selected ? 'is-selected' : ''} ${last ? 'no-sep' : ''}`;
-      if (c.id === 'cars-trucks' || selected) {
-        return `<li><button type="button" class="${cls} inset-focus" data-action="category-pick" data-id="${c.id}" aria-current="${selected}">${inner}</button></li>`;
-      }
-      return `<li>${unavailable(cls, inner, c.label)}</li>`;
-    };
+    const row = (c, last) => crow({ action: 'category-pick', id: c.id, label: c.label, selected: c.id === state.category, chevron: c.chevron, last, disabled: !!c.chevron });
     return `<div class="scrim anim-fade" data-action="sheet-close"></div>
       <div class="csheet surface-sheet anim-sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-title">
         <div class="csheet-header">
@@ -651,57 +678,114 @@
         </div>
       </div>`;
   }
+  // Location and proximity pickers (not designed in Figma; built from the Category Row pattern).
+  function sheetLocation() {
+    const rows = D.locations.map((l, i) => crow({ action: 'location-pick', id: l.id, label: l.label, sub: l.zip, selected: l.id === state.location, last: i === D.locations.length - 1 })).join('');
+    return sheetFrame('Location', `<p class="t-foot c2" style="margin:0">Listings are searched around this area. Your own location isn’t used. Centres are illustrative points on the sample map.</p><ul class="plain-list list-inset">${rows}</ul>`);
+  }
+  function sheetRadius() {
+    const rows = D.radii.map((r, i) => crow({ action: 'radius-pick', id: String(r), label: `Within ${r} miles`, selected: r === state.radius, last: i === D.radii.length - 1 })).join('');
+    return sheetFrame('Distance', `<p class="t-foot c2" style="margin:0">Straight-line distance from ${esc(loc().label)} ${esc(loc().zip)} to each listing’s approximate (illustrative) location.</p><ul class="plain-list list-inset">${rows}</ul>`);
+  }
 
-  function moneyField(key, label, ph, val) {
+  function numField(key, label, ph, val, { prefix = '$', group = 'price', format = true } = {}) {
     return `<div class="price-field">
-      <label class="t-sub-e c2" for="price-${key}">${label}</label>
+      <label class="t-sub-e c2" for="${group}-${key}">${label}</label>
       <div class="money ${val != null ? 'has-value' : ''}">
-        <span class="money-sym t-body" aria-hidden="true">$</span>
-        <input id="price-${key}" class="t-body" type="text" inputmode="numeric" pattern="[0-9,]*" autocomplete="off" enterkeyhint="done"
-          placeholder="${ph}" value="${val == null ? '' : val.toLocaleString('en-US')}" data-price="${key}" aria-describedby="sheet-context">
+        ${prefix ? `<span class="money-sym t-body" aria-hidden="true">${prefix}</span>` : ''}
+        <input id="${group}-${key}" class="t-body" type="text" inputmode="numeric" pattern="[0-9,]*" autocomplete="off" enterkeyhint="done"
+          placeholder="${ph}" value="${val == null ? '' : (format ? val.toLocaleString('en-US') : val)}" data-num="${group}.${key}" aria-describedby="${group}-error sheet-context">
       </div>
     </div>`;
   }
-  const contextLine = extra => `<p class="t-foot c2" id="sheet-context" style="margin:0">${esc([state.query, catLabel(state.category), D.location.label, `${D.radius} miles`, extra].filter(Boolean).join(' · '))}</p>`;
+  const contextLine = extra => `<p class="t-foot c2" id="sheet-context" style="margin:0">${esc([state.query, catLabel(state.category), loc().label, `${state.radius} miles`, extra].filter(Boolean).join(' · '))}</p>`;
+  const priceError = p => p.min != null && p.max != null && p.min > p.max ? 'Minimum is higher than maximum.' : '';
+  function yearError(x) {
+    const { min, max } = D.yearBounds;
+    const out = v => v != null && (v < min || v > max);
+    if (out(x.yearMin) || out(x.yearMax)) return `Enter a year between ${min} and ${max}.`;
+    if (x.yearMin != null && x.yearMax != null && x.yearMin > x.yearMax) return '“From” year is later than “To” year.';
+    return '';
+  }
 
   function sheetPrice() {
-    const p = state.price.draft;
+    const p = state.price.draft, err = priceError(p);
     return sheetFrame('Price', `${contextLine()}
       <form class="price-fields" data-form="price" action="#" novalidate>
-        ${moneyField('min', 'Minimum', 'No min', p.min)}${moneyField('max', 'Maximum', 'No max', p.max)}
+        ${numField('min', 'Minimum', 'No min', p.min)}${numField('max', 'Maximum', 'No max', p.max)}
         <button type="submit" hidden tabindex="-1"></button>
       </form>
+      <p class="t-foot field-error" id="price-error" role="alert" ${err ? '' : 'hidden'}>${esc(err)}</p>
       <div class="price-actions">
         <button type="button" class="text-btn" data-action="price-clear" ${hasPrice(p) ? '' : 'disabled'}>Clear price</button>
-        <button type="button" class="primary-btn" data-action="price-apply">Apply</button>
+        <button type="button" class="primary-btn" data-action="price-apply" ${err ? 'disabled' : ''}>Apply</button>
       </div>`);
   }
 
-  // Filters: segmented Seller type and Mileage; Apply reads "Show N results" from the draft.
   function segmented(name, label, options, value) {
     return `<fieldset class="seg-group"><legend class="t-headline">${label}</legend>
       <div class="segmented" role="radiogroup" aria-label="${label}">
         ${options.map(o => `<label class="seg ${o.id === value ? 'is-on' : ''}"><input type="radio" name="${name}" value="${o.id == null ? '' : o.id}" ${o.id === value ? 'checked' : ''}><span>${esc(o.label)}</span></label>`).join('')}
       </div></fieldset>`;
   }
-  function draftCount() { return compute({ seller: state.seller.draft, mileage: state.mileage.draft }).length; }
+  function selectField(key, label, options, value, { disabled = false, anyLabel } = {}) {
+    return `<div class="price-field">
+      <label class="t-sub-e c2" for="extras-${key}">${label}</label>
+      <div class="money select-surface ${disabled ? 'is-disabled' : ''}">
+        <select id="extras-${key}" class="t-body" data-select="${key}" ${disabled ? 'disabled aria-disabled="true"' : ''}>
+          <option value="">${esc(anyLabel)}</option>
+          ${options.map(o => `<option value="${esc(o)}" ${o === value ? 'selected' : ''}>${esc(o)}</option>`).join('')}
+        </select>
+        ${icon('caret-down', 'ic-caret')}
+      </div>
+    </div>`;
+  }
+  const draftCount = () => compute({ extras: state.extras.draft }).length;
+  // Filters: price stays on its own pill/sheet; this sheet edits seller type and, in Cars & trucks, vehicle details.
   function sheetFilters() {
+    const x = state.extras.draft;
+    const cars = isCars();
+    const yErr = cars ? yearError(x) : '';
     const n = draftCount();
-    const empty = state.seller.draft == null && state.mileage.draft == null;
-    return sheetFrame('Filters', `${contextLine(priceLabel())}
+    const empty = JSON.stringify(cars ? x : { ...noExtras(), seller: x.seller }) === JSON.stringify(noExtras());
+    const models = x.make ? D.makeModels[x.make] : [];
+    const vehicle = cars ? `
+        <fieldset class="seg-group"><legend class="t-headline">Vehicle year</legend>
+          <div class="price-fields">${numField('yearMin', 'From', 'Any', x.yearMin, { prefix: '', group: 'extras', format: false })}${numField('yearMax', 'To', 'Any', x.yearMax, { prefix: '', group: 'extras', format: false })}</div>
+          <p class="t-foot field-error" id="extras-error" role="alert" ${yErr ? '' : 'hidden'}>${esc(yErr)}</p>
+        </fieldset>
+        ${segmented('mileage', 'Mileage', D.mileages, x.mileage)}
+        <fieldset class="seg-group"><legend class="t-headline">Make and model</legend>
+          <div class="price-fields">
+            ${selectField('make', 'Make', Object.keys(D.makeModels), x.make, { anyLabel: 'Any make' })}
+            ${selectField('model', 'Model', models, x.model, { disabled: !x.make, anyLabel: x.make ? 'Any model' : 'Pick a make' })}
+          </div>
+        </fieldset>` : `<p class="t-foot c2" style="margin:0">Vehicle year, mileage and make and model are available in Cars &amp; trucks.</p>`;
+    return sheetFrame('Filters', `${contextLine(hasPrice() ? priceLabel() : '')}
       <form class="filters-form" data-form="filters" action="#" novalidate>
-        ${segmented('seller', 'Seller type', D.sellers, state.seller.draft)}
-        ${segmented('mileage', 'Mileage', D.mileages, state.mileage.draft)}
-        <p class="t-foot c2" style="margin:0">Choose a seller type or mileage to narrow the list. Listings that don’t state that detail are hidden while the filter is on.</p>
+        ${segmented('seller', 'Seller type', D.sellers, x.seller)}
+        ${vehicle}
+        <p class="t-foot c2" style="margin:0">Choose a seller type${cars ? ', year, mileage or make' : ''} to narrow the list. Listings that don’t state that detail are hidden while the filter is on.</p>
         <button type="submit" hidden tabindex="-1"></button>
       </form>
       <div class="price-actions">
         <button type="button" class="text-btn" data-action="filters-clear" ${empty ? 'disabled' : ''}>Clear all</button>
-        <button type="button" class="primary-btn" data-action="filters-apply" data-count>Show ${plural(n, 'result')}</button>
-      </div>`);
+        <button type="button" class="primary-btn" data-action="filters-apply" data-count ${yErr ? 'disabled' : ''}>${yErr ? 'Fix the year to apply' : `Show ${plural(n, 'result')}`}</button>
+      </div>`, { cls: 'psheet is-tall' });
   }
 
-  const SHEETS = { category: sheetCategory, price: sheetPrice, filters: sheetFilters };
+  function menuSort() {
+    const r = state.overlay.rect, appRect = appEl.getBoundingClientRect();
+    const zoom = appRect.width / appEl.offsetWidth || 1;
+    const top = (r.bottom - appRect.top) / zoom + 6, right = Math.max((appRect.right - r.right) / zoom, 12);
+    return `<div class="menu-catcher" data-action="sheet-close"></div>
+      <div class="menu anim-fade" role="menu" aria-label="Sort" style="top:${top.toFixed(0)}px;right:${right.toFixed(0)}px">
+        ${D.sorts.map(s => `<button type="button" class="menu-item" role="menuitemradio" aria-checked="${s.id === state.sort}" data-action="sort-pick" data-id="${s.id}"><span>${esc(s.label)}</span>${s.id === state.sort ? icon('checkmark', 'ic-check') : ''}</button>`).join('')}
+      </div>`;
+  }
+
+  const SHEETS = { category: sheetCategory, location: sheetLocation, radius: sheetRadius, price: sheetPrice, filters: sheetFilters, sort: menuSort };
+  const isMenu = o => o && o.type === 'sort';
 
   // ---------- Rendering ----------
 
@@ -724,8 +808,8 @@
   function renderOverlay() {
     const o = state.overlay;
     overlayEl.innerHTML = o ? SHEETS[o.type]() : '';
-    screenEl.inert = !!o;
-    appEl.classList.toggle('has-sheet', !!o);
+    screenEl.inert = !!o && !isMenu(o);
+    appEl.classList.toggle('has-sheet', !!o && !isMenu(o));
   }
   function focusFid(fid) {
     if (!fid) return false;
@@ -734,11 +818,10 @@
     return false;
   }
   function focusFirst(c) {
-    const el = c && [...c.querySelectorAll('button:not([tabindex="-1"]):not([disabled]), input, textarea, a[href]')].find(e => e.offsetParent !== null);
+    const el = c && [...c.querySelectorAll('button:not([tabindex="-1"]):not([disabled]), input, select, textarea, a[href]')].find(e => e.offsetParent !== null && e.getAttribute('aria-disabled') !== 'true');
     if (el) el.focus({ preventScroll: true });
   }
 
-  // returnTo: screen, view, selected marker, list scroll and filter-row position.
   function snapshot(fid) {
     const list = $('[data-scroll="list"]'), filters = $('.filters');
     return { screen: state.screen, view: state.view, pan: { ...state.pan }, selectedListingId: state.selectedListingId, expandedCluster: state.expandedCluster,
@@ -754,84 +837,79 @@
     if (!focusFid(snap.fid)) focusFirst(screenEl);
   }
   function scrollFiltersTo(fid) {
-    const filters = $('.filters');
-    if (!filters) return;
+    const filters = $('.filters'); if (!filters) return;
     const el = fid && filters.querySelector(`[data-fid="${fid}"]`);
     if (!el) { filters.scrollLeft = 0; return; }
     const pill = el.closest('.pill');
     filters.scrollLeft = Math.max(0, pill.offsetLeft + pill.offsetWidth + 16 - filters.clientWidth);
   }
-
-  // First load of a list: skeleton cards for a moment, never an empty state.
   function firstLoad(after) {
     state.loading = true;
     render({ resetScroll: true });
-    setTimeout(() => {
-      state.loading = false;
-      render({ resetScroll: true });
-      if (after) after();
-    }, delay('load'));
+    setTimeout(() => { state.loading = false; render({ resetScroll: true }); if (after) after(); }, delay('load'));
   }
-
-  function showList(fid, { view = 'list', load = false } = {}) {
+  function showList(fid, { load = false } = {}) {
     state.screen = listScreen();
-    state.view = state.screen === 'home' ? 'list' : view;
+    state.view = 'list';
     state.selectedListingId = null; state.expandedCluster = null; state.pan = { x: 0, y: 0 };
     const done = () => { scrollFiltersTo(hasPrice() ? 'pill-price' : null); if (!focusFid(fid)) focusFirst(screenEl); };
     if (load) firstLoad(done); else { render({ resetScroll: true }); done(); }
+  }
+  // Re-run after an applied change (filters, sort, location, proximity) on the same screen and view.
+  function rerun(focus, { scrollTo } = {}) {
+    if (state.selectedListingId && !compute().some(l => l.id === state.selectedListingId)) state.selectedListingId = null;
+    state.expandedCluster = null; state.pan = { x: 0, y: 0 };
+    render({ resetScroll: true });
+    if (scrollTo !== undefined) scrollFiltersTo(scrollTo);
+    if (!focusFid(focus)) focusFirst(screenEl);
+    const n = compute().length;
+    announce(n ? plural(n, state.query ? 'result' : 'listing') : 'No listings match your search.');
   }
 
   // ---------- Overlays ----------
 
   function openOverlay(type, trigger) {
-    if (type === 'price') state.price.draft = { ...state.price.applied };   // drafts copy applied values
-    if (type === 'filters') { state.seller.draft = state.seller.applied; state.mileage.draft = state.mileage.applied; }
-    state.overlay = { type, focusReturn: trigger && trigger.dataset.fid };
+    if (type === 'price') state.price.draft = { ...state.price.applied };     // drafts copy applied values
+    if (type === 'filters') state.extras.draft = { ...state.extras.applied };
+    state.overlay = { type, focusReturn: trigger && trigger.dataset.fid, rect: trigger ? trigger.getBoundingClientRect() : null };
     renderOverlay();
-    if (type === 'price' && !hasPrice()) $('#price-max').focus();
-    else {
-      const sel = overlayEl.querySelector('.crow.is-selected, .seg.is-on input');
-      if (sel) sel.focus(); else focusFirst(overlayEl.querySelector('[role="dialog"]'));
-    }
+    if (type === 'sort') { trigger.setAttribute('aria-expanded', 'true'); (overlayEl.querySelector('[aria-checked="true"]') || overlayEl.querySelector('.menu-item')).focus(); return; }
+    if (type === 'price' && !hasPrice()) { $('#price-max').focus(); return; }
+    const sel = overlayEl.querySelector('.crow.is-selected, .seg.is-on input');
+    if (sel) sel.focus(); else focusFirst(overlayEl.querySelector('[role="dialog"]'));
   }
   function closeOverlay() {
     const fid = state.overlay && state.overlay.focusReturn;
-    state.overlay = null;   // discard drafts
+    state.overlay = null;                                   // discard drafts
     state.price.draft = { ...state.price.applied };
-    state.seller.draft = state.seller.applied; state.mileage.draft = state.mileage.applied;
+    state.extras.draft = { ...state.extras.applied };
     renderOverlay();
+    const t = fid && appEl.querySelector(`[data-fid="${fid}"]`);
+    if (t && t.hasAttribute('aria-expanded')) t.setAttribute('aria-expanded', 'false');
     focusFid(fid);
   }
+  function dismissOverlay() { state.overlay = null; renderOverlay(); }
 
-  // ---------- Price apply (with slow / failed network simulation) ----------
+  // ---------- Price apply (slow / failed network simulation) ----------
 
   function applyPrice(price) {
-    state.overlay = null;
-    renderOverlay();
+    dismissOverlay();
     state.pending = { price, status: 'applying' };
     render();
     announce(`Applying ${priceLabel(price)}`);
-    const t = setTimeout(() => {
+    setTimeout(() => {
       if (!state.pending) return;
       if (sim.network === 'fail' && !sim.failedOnce) {
         sim.failedOnce = true;
         state.pending.status = 'failed';
-        render();
-        focusFid('retry-btn');
+        render(); focusFid('retry-btn');
         announce(`Couldn't apply ${priceLabel(price)}. Showing previous results.`);
         return;
       }
-      state.price.applied = { ...price };
-      state.price.draft = { ...price };
+      state.price.applied = { ...price }; state.price.draft = { ...price };
       state.pending = null;
-      state.selectedListingId = null; state.expandedCluster = null; state.pan = { x: 0, y: 0 };
-      render({ resetScroll: true });
-      scrollFiltersTo(hasPrice() ? 'pill-price' : null);
-      focusFid('pill-price');
-      const n = compute().length;
-      announce(n ? plural(n, 'result') : 'No listings match your search.');
+      rerun('pill-price', { scrollTo: hasPrice() ? 'pill-price' : null });
     }, delay('apply'));
-    return t;
   }
 
   // ---------- Search ----------
@@ -840,31 +918,33 @@
     state.searchReturn = snapshot(fid);
     state.screen = 'search';
     render();
-    const input = $('#search-input');
-    input.focus();
-    input.setSelectionRange(input.value.length, input.value.length);
+    const input = $('#search-input'); input.focus(); input.setSelectionRange(input.value.length, input.value.length);
   }
   function addRecent(query, scope) {
-    const key = query.trim().toLowerCase();
-    recents = [{ query, scope }, ...recents.filter(r => r.query.trim().toLowerCase() !== key || JSON.stringify(r.scope) !== JSON.stringify(scope))].slice(0, 8);
-    store.set('recents-v2', recents);
+    const key = JSON.stringify([query.trim().toLowerCase(), scope]);
+    recents = [{ query, scope }, ...recents.filter(r => JSON.stringify([r.query.trim().toLowerCase(), r.scope]) !== key)].slice(0, 8);
+    store.set('recents-v3', recents);
+  }
+  function setCategory(id) {
+    if (state.category === id) return;
+    state.category = id;
+    // Vehicle filters only belong to Cars & trucks; seller type and price carry over.
+    if (!isCars(id)) state.extras.applied = { ...noExtras(), seller: state.extras.applied.seller };
   }
   function submitSearch(q, scope) {
     const query = q.trim().replace(/\s+/g, ' ');
     if (!query) return false;
     state.searchReturn = null;
-    if (scope && scope.category) state.category = scope.category;
     const kw = D.categoryKeywords[query.toLowerCase()];
-    if (kw) {
-      addRecent('Cars', { category: 'all' });
-      state.category = kw; state.query = '';
-      showList('search-field', { load: true });
-      return true;
+    if (kw) { addRecent('Cars', { category: 'all' }); setCategory(kw); state.query = ''; showList('search-field', { load: true }); return true; }
+    if (scope) {
+      if (scope.category) setCategory(scope.category);
+      if (scope.location) state.location = scope.location;
+      if (scope.radius) state.radius = scope.radius;
+      if (scope.price) state.price.applied = { min: scope.price.min ?? null, max: scope.price.max ?? null };
     }
     state.query = query;
-    // A new search keeps category, location and radius; price applies only where the recent search stored one.
-    state.price.applied = scope && scope.price ? { min: scope.price.min ?? null, max: scope.price.max ?? null } : state.price.applied;
-    addRecent(query, { category: state.category, ...(hasPrice() ? { price: { ...state.price.applied } } : {}) });
+    addRecent(query, { category: state.category, ...(state.radius !== 25 ? { radius: state.radius } : {}), ...(state.location !== 'mpls' ? { location: state.location } : {}), ...(hasPrice() ? { price: { ...state.price.applied } } : {}) });
     showList('search-field', { load: true });
     return true;
   }
@@ -875,86 +955,96 @@
     noop() {},
     'tab-search'() { const list = $('[data-scroll="list"]'); if (list) list.scrollTo({ top: 0, behavior: 'smooth' }); },
     'sheet-close'() { closeOverlay(); },
-
     grabber() { actions[state.view === 'map' ? 'map-collapse' : 'map-expand'](); },
 
-    // Category
+    // Category, location, proximity (applied on selection; Close discards)
     'open-category'(el) { openOverlay('category', el); },
     'category-pick'(el) {
       const id = el.dataset.id;
-      if (id === state.category) { closeOverlay(); return; }   // same category: no change
-      state.category = id;
-      state.overlay = null; renderOverlay();
+      if (id === state.category) { closeOverlay(); return; }
+      setCategory(id);
+      dismissOverlay();
       showList('pill-category', { load: true });
-      announce('Cars & trucks');
+      announce(catLabel(id));
     },
+    'open-location'(el) { openOverlay('location', el); },
+    'location-pick'(el) { state.location = el.dataset.id; dismissOverlay(); rerun('pill-location', { scrollTo: null }); },
+    'open-radius'(el) { openOverlay('radius', el); },
+    'radius-pick'(el) { state.radius = +el.dataset.id; dismissOverlay(); rerun('pill-radius', { scrollTo: null }); },
+
+    // Sort
+    'open-sort'(el) { openOverlay('sort', el); },
+    'sort-pick'(el) { state.sort = el.dataset.id; dismissOverlay(); rerun('sort-btn'); announce(`Sorted by ${D.sorts.find(s => s.id === state.sort).label}`); },
 
     // Search
     'open-search'(el) { openSearch(el.dataset.fid || 'search-field'); },
-    'search-cancel'() { const snap = state.searchReturn; state.searchReturn = null; restore(snap); }, // discards typed text
+    'search-cancel'() { const snap = state.searchReturn; state.searchReturn = null; restore(snap); },
     'search-clear'() { const i = $('#search-input'); i.value = ''; syncEntryField(); i.focus(); },
     'search-recent'(el) {
       const r = recents[+el.dataset.index];
       if (r.query) submitSearch(r.query, r.scope);
-      else { state.searchReturn = null; state.query = ''; state.category = 'cars-trucks'; showList('search-field', { load: true }); }
+      else { state.searchReturn = null; state.query = ''; setCategory((r.scope && r.scope.category) || 'cars-trucks'); showList('search-field', { load: true }); }
     },
-    'recents-clear'() { recents = []; store.set('recents-v2', recents); const v = $('#search-input').value; render(); const i = $('#search-input'); i.value = v; syncEntryField(); i.focus(); },
-    'results-clear'() {
-      state.query = ''; state.price.applied = noPrice(); state.seller.applied = null; state.mileage.applied = null; state.pending = null;
-      showList('search-field');
-    },
+    'recents-clear'() { recents = []; store.set('recents-v3', recents); const v = $('#search-input').value; render(); const i = $('#search-input'); i.value = v; syncEntryField(); i.focus(); },
+    // Clearing the query keeps category, location, proximity and filters.
+    'results-clear'() { state.query = ''; state.pending = null; showList('search-field'); },
 
     // Price
     'open-price'(el) { openOverlay('price', el); },
     'price-clear'() {
       state.price.draft = noPrice();   // draft only; applied stays until Apply
-      overlayEl.querySelectorAll('[data-price]').forEach(i => { i.value = ''; i.closest('.money').classList.remove('has-value'); });
-      overlayEl.querySelector('[data-action="price-clear"]').disabled = true;
+      overlayEl.querySelectorAll('[data-num^="price."]').forEach(i => { i.value = ''; i.closest('.money').classList.remove('has-value'); });
+      syncPriceUi();
       $('#price-max').focus();
     },
     'price-apply'() {
       const draft = { ...state.price.draft };
-      if (JSON.stringify(draft) === JSON.stringify(state.price.applied)) { closeOverlay(); return; } // nothing changed
+      if (priceError(draft)) return;
+      if (JSON.stringify(draft) === JSON.stringify(state.price.applied)) { closeOverlay(); return; }
       applyPrice(draft);
     },
-    'retry-apply'() { applyPrice(state.pending.price); },     // same query and filters
-    'price-remove'() {
-      state.price.applied = noPrice(); state.price.draft = noPrice(); state.pending = null;
-      state.selectedListingId = null; state.expandedCluster = null;
-      render({ resetScroll: true });
-      scrollFiltersTo(null);
-      focusFid('pill-price');
-      announce(plural(compute().length, 'result'));
-    },
+    'retry-apply'() { applyPrice(state.pending.price); },
+    // Price × removes only the price constraint.
+    'price-remove'() { state.price.applied = noPrice(); state.price.draft = noPrice(); state.pending = null; rerun('pill-price', { scrollTo: null }); },
 
-    // Filters
+    // Filters sheet
     'open-filters'(el) { openOverlay('filters', el); },
     'filters-clear'() {
-      state.seller.draft = null; state.mileage.draft = null;
+      // Resets only this sheet's fields (seller and vehicle details); price, location, category and query stay.
+      state.extras.draft = noExtras();
       renderOverlay();
       focusFirst(overlayEl.querySelector('form'));
     },
     'filters-apply'() {
-      state.seller.applied = state.seller.draft; state.mileage.applied = state.mileage.draft;
-      state.overlay = null; renderOverlay();
-      if (vehicleFiltered()) { state.view = 'list'; state.selectedListingId = null; }  // map isn't available here
-      render({ resetScroll: true });
-      scrollFiltersTo('pill-price');
-      focusFid('filters-btn');
-      announce(plural(compute().length, 'result'));
+      const x = state.extras.draft;
+      if (isCars() && yearError(x)) return;
+      state.extras.applied = { ...x };
+      dismissOverlay();
+      rerun('filters-btn');
     },
+    'extras-clear-applied'() { state.extras.applied = noExtras(); state.extras.draft = noExtras(); rerun('filters-btn'); },
 
     // Details
     'open-details'(el) {
       state.returnTo = snapshot(el.dataset.fid);
-      state.details = { id: el.dataset.id };
+      const ids = compute().map(l => l.id);
+      state.details = { id: el.dataset.id, ids: ids.includes(el.dataset.id) ? ids : [el.dataset.id] };
       state.screen = 'details';
       render();
       focusFid('details-close');
     },
+    'details-step'(el) {
+      const d = state.details, i = d.ids.indexOf(d.id) + (+el.dataset.dir);
+      if (i < 0 || i >= d.ids.length) return;
+      d.id = d.ids[i];
+      if (state.returnTo) { state.returnTo.fid = 'card-' + d.id; if (state.returnTo.selectedListingId) { state.returnTo.selectedListingId = d.id; state.returnTo.fid = 'preview-open'; } }
+      render();
+      focusFid(+el.dataset.dir < 0 ? (i === 0 ? 'details-next' : 'details-prev') : (i === d.ids.length - 1 ? 'details-prev' : 'details-next'));
+      announce(`Listing ${i + 1} of ${d.ids.length}: ${byId[d.id].title}`);
+    },
     'details-close'() {
       const id = state.details.id;
-      if (sim.removedId === id && !state.removed.includes(id)) state.removed.push(id);   // removed: back to results without it
+      if (sim.removedId === id && !state.removed.includes(id)) state.removed.push(id);
       const snap = state.returnTo; state.returnTo = null; state.details = null;
       if (snap.selectedListingId === id && state.removed.includes(id)) { snap.selectedListingId = null; snap.fid = null; }
       restore(snap);
@@ -963,30 +1053,18 @@
       const id = state.details.id;
       saved = saved.includes(id) ? saved.filter(x => x !== id) : [...saved, id];
       store.set('saved-listings', saved);
-      const on = saved.includes(id);
-      const b = $('[data-fid="save-star"]');
+      const on = saved.includes(id), b = $('[data-fid="save-star"]');
       b.innerHTML = icon(on ? 'star-fill' : 'star-outline');
       b.setAttribute('aria-pressed', String(on));
       announce(on ? 'Saved to Favorites' : 'Removed from Favorites');
     },
 
     // Map
-    'map-expand'() {
-      if (!expandMapAvailable()) return;
-      state.view = 'map'; render(); focusFid('map-collapse');
-      announce('Map in view');
-    },
-    'map-collapse'() {
-      state.view = 'list'; state.selectedListingId = null; state.expandedCluster = null; state.pan = { x: 0, y: 0 };
-      render(); focusFid('map-toggle');
-      announce('List in view');
-    },
+    'map-expand'() { if (!expandMapAvailable()) return; state.view = 'map'; render(); focusFid('map-collapse'); announce('Map in view'); },
+    'map-collapse'() { state.view = 'list'; state.selectedListingId = null; state.expandedCluster = null; state.pan = { x: 0, y: 0 }; render(); focusFid('map-toggle'); announce('List in view'); },
     'marker-select'(el) {
-      state.selectedListingId = el.dataset.id;
-      render();
-      focusFid('preview-open');
-      const l = byId[el.dataset.id];
-      announce(`${l.title}, ${money(l.price)}, ${l.area}`);
+      state.selectedListingId = el.dataset.id; render(); focusFid('preview-open');
+      const l = byId[el.dataset.id]; announce(`${l.title}, ${money(l.price)}, ${l.area}`);
     },
     'cluster-open'(el) { state.expandedCluster = el.dataset.key; render(); focusFid('marker-' + el.dataset.key.split('-')[0]); },
     'preview-dismiss'() { const id = state.selectedListingId; state.selectedListingId = null; render(); if (!focusFid('marker-' + id)) focusFirst(screenEl); },
@@ -1003,18 +1081,29 @@
     $('#entry-field').classList.toggle('has-clear', has);
     $('[data-action="search-clear"]').hidden = !has;
   }
+  function syncPriceUi() {
+    const p = state.price.draft, err = priceError(p);
+    overlayEl.querySelector('[data-action="price-clear"]').disabled = !hasPrice(p);
+    overlayEl.querySelector('[data-action="price-apply"]').disabled = !!err;
+    const e = $('#price-error'); e.hidden = !err; e.textContent = err;
+  }
   function syncFiltersUi() {
+    const x = state.extras.draft, cars = isCars();
     overlayEl.querySelectorAll('.seg').forEach(s => s.classList.toggle('is-on', s.querySelector('input').checked));
-    const n = draftCount();
-    overlayEl.querySelector('[data-count]').textContent = `Show ${plural(n, 'result')}`;
-    overlayEl.querySelector('[data-action="filters-clear"]').disabled = state.seller.draft == null && state.mileage.draft == null;
+    const err = cars ? yearError(x) : '';
+    const e = $('#extras-error'); if (e) { e.hidden = !err; e.textContent = err; }
+    const btn = overlayEl.querySelector('[data-count]');
+    btn.disabled = !!err;
+    btn.textContent = err ? 'Fix the year to apply' : `Show ${plural(draftCount(), 'result')}`;
+    const empty = JSON.stringify(cars ? x : { ...noExtras(), seller: x.seller }) === JSON.stringify(noExtras());
+    overlayEl.querySelector('[data-action="filters-clear"]').disabled = empty;
   }
 
   // ---------- Events ----------
 
   appEl.addEventListener('click', e => {
     const el = e.target.closest('[data-action]');
-    if (!el || !appEl.contains(el)) { const m = e.target.closest('.money'); if (m) m.querySelector('input').focus(); return; }
+    if (!el || !appEl.contains(el)) { const m = e.target.closest('.money:not(.select-surface)'); if (m) m.querySelector('input').focus(); return; }
     if (el.getAttribute('aria-disabled') === 'true' || el.disabled) { e.preventDefault(); return; }
     const fn = actions[el.dataset.action];
     if (fn) { e.preventDefault(); fn(el, e); }
@@ -1029,24 +1118,41 @@
   appEl.addEventListener('input', e => {
     const t = e.target;
     if (t.id === 'search-input') { syncEntryField(); return; }
-    if (t.dataset.price) {
-      const digits = t.value.replace(/\D/g, '').replace(/^0+(?=\d)/, '').slice(0, 7);
+    if (t.dataset.num) {
+      const [group, key] = t.dataset.num.split('.');
+      const isYear = group === 'extras';
+      const digits = t.value.replace(/\D/g, '').replace(/^0+(?=\d)/, '').slice(0, isYear ? 4 : 7);
       const val = digits ? parseInt(digits, 10) : null;
-      state.price.draft[t.dataset.price] = val;
-      t.value = val == null ? '' : val.toLocaleString('en-US');
+      const target = group === 'price' ? state.price.draft : state.extras.draft;
+      // A year counts once all four digits are typed; until then the field is treated as empty.
+      target[key] = isYear && val != null && digits.length < 4 ? null : val;
+      t.value = val == null ? '' : (isYear ? digits : val.toLocaleString('en-US'));
       t.closest('.money').classList.toggle('has-value', val != null);
-      overlayEl.querySelector('[data-action="price-clear"]').disabled = !hasPrice(state.price.draft);
+      if (group === 'price') syncPriceUi(); else syncFiltersUi();
     }
   });
   appEl.addEventListener('change', e => {
     const t = e.target;
-    if (t.type === 'radio' && state.overlay && state.overlay.type === 'filters') {
-      const v = t.value === '' ? null : (t.name === 'mileage' ? +t.value : t.value);
-      state[t.name].draft = v;
-      syncFiltersUi();
+    if (!state.overlay || state.overlay.type !== 'filters') return;
+    const x = state.extras.draft;
+    if (t.type === 'radio') { x[t.name] = t.value === '' ? null : (t.name === 'mileage' ? +t.value : t.value); syncFiltersUi(); }
+    if (t.dataset.select === 'make') {
+      x.make = t.value || null;
+      // Changing make resets a model that doesn't belong to it.
+      if (x.model && (!x.make || !D.makeModels[x.make].includes(x.model))) x.model = null;
+      renderOverlay(); $('#extras-make').focus();
+      announce(x.make ? `Make ${x.make}. Model ${x.model || 'any'}` : 'Any make');
     }
+    if (t.dataset.select === 'model') { x.model = t.value || null; syncFiltersUi(); }
   });
   document.addEventListener('keydown', e => {
+    const o = state.overlay;
+    if (isMenu(o)) {
+      const items = [...overlayEl.querySelectorAll('.menu-item')], i = items.indexOf(document.activeElement);
+      const next = { ArrowDown: (i + 1) % items.length, ArrowUp: (i - 1 + items.length) % items.length, Home: 0, End: items.length - 1 }[e.key];
+      if (next != null) { items[next].focus(); e.preventDefault(); return; }
+      if (e.key === 'Tab') { e.preventDefault(); closeOverlay(); return; }
+    }
     const g = document.activeElement && document.activeElement.classList.contains('grabber-btn');
     if (g && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
       e.preventDefault();
@@ -1056,13 +1162,13 @@
       return;
     }
     if (e.key !== 'Escape') return;
-    if (state.overlay) { e.preventDefault(); closeOverlay(); }
+    if (o) { e.preventDefault(); closeOverlay(); }
     else if (state.screen === 'search') { e.preventDefault(); actions['search-cancel'](); }
     else if (state.screen === 'details') { e.preventDefault(); actions['details-close'](); }
     else if (state.selectedListingId) { e.preventDefault(); actions['preview-dismiss'](); }
     else if (state.expandedCluster) { e.preventDefault(); actions['map-bg'](); }
   });
-  overlayEl.addEventListener('touchmove', e => { if (e.target.closest('.scrim')) e.preventDefault(); }, { passive: false });
+  overlayEl.addEventListener('touchmove', e => { if (e.target.closest('.scrim, .menu-catcher')) e.preventDefault(); }, { passive: false });
 
   // ---------- Viewport ----------
 
@@ -1096,11 +1202,7 @@
   const reset = document.getElementById('sim-reset');
   if (reset) reset.addEventListener('click', () => { state = initialState(); sim.failedOnce = false; firstLoad(); });
 
-  window.CL_PROTO = {
-    get state() { return JSON.parse(JSON.stringify(state)); },
-    ids: () => compute().map(l => l.id),
-    sim
-  };
+  window.CL_PROTO = { get state() { return JSON.parse(JSON.stringify(state)); }, ids: () => compute().map(l => l.id), sim, milesFrom: id => milesFrom(byId[id]) };
 
   fitViewport();
   firstLoad();
