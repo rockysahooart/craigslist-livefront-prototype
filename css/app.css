@@ -1325,3 +1325,13 @@ button {
 .map-retry { flex: none; min-height: 44px; padding: 0 14px; border-radius: 999px; color: var(--purple); box-shadow: inset 0 0 0 1.5px var(--purple); font-size: 15px; font-weight: 600; }
 .app[data-view="list"] .map-notice { display: none; }
 .app[data-view="map"] .map-notice { top: calc(var(--top) + 96px); }
+
+/* ---------- Home sheet: rest (raised) and expanded ---------- */
+/* At rest the sheet itself takes vertical drags (the list doesn't scroll yet); expanded, the list scrolls natively
+   and the controls area still drags the sheet. */
+.app[data-home="rest"] #dsheet { touch-action: none; }
+.app[data-home="rest"] #dsheet .list-scroll { overflow-y: hidden; touch-action: none; }
+.app[data-home="expanded"] #dsheet .sheet-controls { touch-action: none; }
+.app[data-home] #dsheet { -webkit-user-select: none; user-select: none; }
+.app[data-home="expanded"] .map-controls { display: none; }
+.app.map-short .map-controls { flex-direction: row; align-items: center; top: calc(var(--top) + 52px); }

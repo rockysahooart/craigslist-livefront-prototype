@@ -74,6 +74,7 @@
       price: { applied: noPrice(), draft: noPrice() },
       extras: { applied: noExtras(), draft: noExtras() },
       view: 'list',            // list | map
+      homeSheet: 'rest',       // Home sheet: rest (raised, map visible) | expanded (listings fill the screen)
       selectedListingId: null,
       expandedCluster: null,
       pan: { x: 0, y: 0 },
@@ -487,7 +488,7 @@
     const also = alsoFiltered();
     const controls = home
       ? `<div class="sheet-controls is-home" style="align-items:stretch">
-          <div class="handle-space"><div class="grabber" aria-hidden="true"></div></div>
+          <div class="handle-space"></div>
           ${searchFieldIdle()}
           ${continueEntry()}
           <div class="sheet-actions">${filtersBtn()}${unavailable('quiet', `${icon('saved-search')}<span>Saved searches</span>`, 'Saved searches')}</div>
@@ -518,6 +519,7 @@
       </div>` : '';
     return `${mapBg({ home, markers: markers(list) })}
       <section class="sheet dsheet surface-sheet" id="dsheet" aria-label="${home ? `Listings near ${esc(loc().label)}` : 'Results'}">
+        ${home ? `<button type="button" class="grabber-btn" data-action="grabber" data-fid="grabber" aria-expanded="${state.homeSheet === 'expanded'}" aria-label="${grabberLabel()}"></button>` : ''}
         ${home ? '' : `<button type="button" class="grabber-btn" data-action="grabber" data-drag data-fid="grabber" aria-label="${grabberLabel()}"></button>`}
         <div class="sheet-compact" data-drag>
           <h2 class="t-sub-e" style="margin:0" id="summary">${esc(summary)}</h2>
@@ -544,12 +546,39 @@
     const probe = document.getElementById('inset-probe');
     return { top: probe.offsetTop, bottom: probe.offsetHeight, h: appEl.clientHeight };
   }
+  // Home at rest: high enough that the toolbar and one complete listing row sit above the bottom navigation, measured
+  // from the rendered sheet (so it adapts to the viewport and to optional rows such as Continue your search).
+  // Never lower than the Figma position, and never so high that the map and circle disappear.
+  let homeRest = null;
+  function homeRestTop() {
+    const { top, h } = insets();
+    const designed = Math.min(top + 389, h - 420), floor = top + 170;
+    const sheet = $('#dsheet'), tab = $('.tabbar');
+    if (state.screen !== 'home' || !sheet || !tab) return homeRest || designed;
+    const z = zoomFactor(), sr = sheet.getBoundingClientRect(), list = sheet.querySelector('[data-scroll="list"]');
+    const row = [...sheet.querySelectorAll('.grid > li')].slice(0, 2);
+    if (!row.length) return homeRest || designed;
+    const rowBottom = Math.max(...row.map(li => li.getBoundingClientRect().bottom)) - sr.top + (list ? list.scrollTop * z : 0);
+    const tabTop = tab.getBoundingClientRect().top - appEl.getBoundingClientRect().top;
+    homeRest = Math.round(Math.max(floor, Math.min(designed, (tabTop - 12 * z - rowBottom) / z)));
+    return homeRest;
+  }
   function sheetTop(view = state.view) {
     const { top, bottom, h } = insets();
-    if (state.screen === 'home') return Math.min(top + 389, h - 420);
+    if (state.screen === 'home') return state.homeSheet === 'expanded' ? top + 88 : homeRestTop();
     return view === 'map' ? h - (158 + bottom) : top + 88;
   }
-  const grabberLabel = () => state.view === 'map' ? 'Results sheet, map in view. Activate to show the list.' : 'Results sheet, list in view. Activate to show the map.';
+  const grabberLabel = () => state.screen === 'home'
+    ? (state.homeSheet === 'expanded' ? 'Listings sheet, expanded. Activate to show the map.' : 'Listings sheet. Activate to expand the listings.')
+    : state.view === 'map' ? 'Results sheet, map in view. Activate to show the list.' : 'Results sheet, list in view. Activate to show the map.';
+  function setHomeSheet(v, { announceIt = true } = {}) {
+    if (state.screen !== 'home' || state.homeSheet === v) { applyFrame(); return; }
+    state.homeSheet = v;
+    const list = $('[data-scroll="list"]'); if (v === 'rest' && list) list.scrollTop = 0;
+    applyFrame();
+    const g = $('[data-fid="grabber"]'); if (g) g.setAttribute('aria-expanded', String(v === 'expanded'));
+    if (announceIt) announce(v === 'expanded' ? 'Listings expanded' : 'Map in view');
+  }
   function applyFrame({ animate = true } = {}) {
     const sheet = $('#dsheet');
     if (!sheet) return;
@@ -557,6 +586,10 @@
     sheet.style.top = sheetTop() + 'px';
     sheet.classList.toggle('is-compact', state.view === 'map' && state.screen !== 'home');
     appEl.dataset.view = state.screen === 'home' ? 'home' : state.view;
+    if (state.screen === 'home') appEl.dataset.home = state.homeSheet; else delete appEl.dataset.home;
+    // Short exposed map (small phones at rest): map controls sit in one row under the filters.
+    const { top: t0 } = insets();
+    appEl.classList.toggle('map-short', state.screen === 'home' && sheetTop() - t0 < 300);
     const g = $('[data-fid="grabber"]'); if (g) g.setAttribute('aria-label', grabberLabel());
     syncMap();
   }
@@ -600,7 +633,7 @@
   function fitSearchArea({ animate = false } = {}) {
     if (!lmap) return;
     const { top, h } = insets();
-    const sheetY = state.screen === 'home' ? sheetTop() : sheetTop('map');
+    const sheetY = state.screen === 'home' ? homeRestTop() : sheetTop('map');
     mapView.fitting = true;
     const done = () => { mapView.fitting = false; mapView.userMoved = false; };
     if (animate) { lmap.once('moveend', done); setTimeout(() => { if (mapView.fitting) done(); }, 900); }   // no move → no moveend
@@ -618,6 +651,8 @@
     const frame = `${state.screen === 'home' ? 'home' : 'sheet'}`;
     if (key !== mapView.key) { mapView.key = key; mapView.frame = frame; fitSearchArea(); }
     else if (frame !== mapView.frame) { mapView.frame = frame; if (!mapView.userMoved) fitSearchArea(); }
+    else if (state.screen === 'home' && Math.abs(homeRestTop() - (mapView.homeTop || 0)) > 6 && !mapView.userMoved) fitSearchArea();
+    if (state.screen === 'home') mapView.homeTop = homeRestTop();
     const { h } = insets();
     mapLayerEl.style.setProperty('--attr-bottom', Math.max(4, h - sheetTop() + 6) + 'px');
     syncMarkers();
@@ -648,6 +683,16 @@
   const zoomFactor = () => { const r = appEl.getBoundingClientRect(); return r.height / appEl.offsetHeight || 1; };
   appEl.addEventListener('pointerdown', e => {
     const zone = e.target.closest('[data-drag]'), sheet = $('#dsheet');
+    if (e.button > 0) return;
+    // Home: a vertical drag anywhere in the sheet moves it — including over the search field and cards, whose
+    // activation is cancelled once it becomes a drag. Expanded, the list scrolls natively (touch); a downward
+    // drag from the top of the list is handled by the touch listener below.
+    if (state.screen === 'home' && sheet && sheet.contains(e.target) && !state.overlay) {
+      const list = e.target.closest('[data-scroll="list"]');
+      if (state.homeSheet === 'expanded' && list && (e.pointerType !== 'mouse' || list.scrollTop > 0)) return;
+      drag = { id: e.pointerId, y0: e.clientY, top0: parseFloat(sheet.style.top), moved: false, zone: sheet, home: true };
+      return;
+    }
     if (!zone || !sheet || !sheet.contains(zone) || state.overlay || state.screen === 'home') return;
     const ctl = e.target.closest('button, a, input, select');
     if (ctl && !ctl.classList.contains('grabber-btn')) return;
@@ -663,6 +708,12 @@
       drag.moved = true; try { drag.zone.setPointerCapture(e.pointerId); } catch (_) { /* ignore */ }
       sheet.classList.add('is-dragging');
     }
+    if (drag.home) {
+      const { top: t } = insets(), lo = t + 88, hi = homeRestTop();
+      sheet.style.top = Math.min(hi, Math.max(lo, drag.top0 + dy)) + 'px';
+      e.preventDefault();
+      return;
+    }
     const lo = sheetTop('list'), hi = sheetTop('map');
     const top = Math.min(hi, Math.max(lo, drag.top0 + dy));
     sheet.style.top = top + 'px';
@@ -676,6 +727,7 @@
     suppressClick = true; setTimeout(() => { suppressClick = false; }, 0);
     const sheet = $('#dsheet');
     sheet.classList.remove('is-dragging');
+    if (d.home) { settleHomeDrag(sheet, d.top0); return; }
     const top = parseFloat(sheet.style.top), lo = sheetTop('list'), hi = sheetTop('map');
     const view = top - lo > (hi - lo) / 2 ? 'map' : 'list';
     if (view === 'list') { state.selectedListingId = null; state.expandedCluster = null; state.pan = { x: 0, y: 0 }; }
@@ -683,6 +735,58 @@
     render();
     announce(view === 'map' ? 'Map in view' : 'List in view');
   }
+  // A drag of 40 pt or more settles in its direction; anything shorter springs back.
+  function settleHomeDrag(sheet, top0) {
+    const dy = parseFloat(sheet.style.top) - top0;
+    const v = dy <= -40 ? 'expanded' : dy >= 40 ? 'rest' : state.homeSheet;
+    if (v === state.homeSheet) applyFrame(); else setHomeSheet(v);
+  }
+  // Expanded Home, touch: pulling down while the list is at its top collapses the sheet. Only that case calls
+  // preventDefault; upward moves and any move once the list has scrolled stay native scrolling.
+  let tdrag = null;
+  appEl.addEventListener('touchstart', e => {
+    tdrag = null;
+    if (state.screen !== 'home' || state.homeSheet !== 'expanded' || state.overlay || e.touches.length !== 1) return;
+    const list = e.target.closest('#dsheet [data-scroll="list"]');
+    if (!list || list.scrollTop > 0) return;
+    tdrag = { y0: e.touches[0].clientY, top0: parseFloat($('#dsheet').style.top), moved: false };
+  }, { passive: true });
+  appEl.addEventListener('touchmove', e => {
+    if (!tdrag) return;
+    const dy = (e.touches[0].clientY - tdrag.y0) / zoomFactor();
+    if (!tdrag.moved) {
+      if (dy < -4) { tdrag = null; return; }      // upward: let the list scroll
+      if (dy < 8) return;
+      tdrag.moved = true; $('#dsheet').classList.add('is-dragging');
+    }
+    e.preventDefault();
+    const { top: t } = insets();
+    $('#dsheet').style.top = Math.min(homeRestTop(), Math.max(t + 88, tdrag.top0 + dy)) + 'px';
+  }, { passive: false });
+  appEl.addEventListener('touchend', () => {
+    const d = tdrag; tdrag = null;
+    if (!d || !d.moved) return;
+    suppressClick = true; setTimeout(() => { suppressClick = false; }, 0);
+    const sheet = $('#dsheet'); sheet.classList.remove('is-dragging');
+    settleHomeDrag(sheet, d.top0);
+  });
+  appEl.addEventListener('touchcancel', () => { if (tdrag && tdrag.moved) { $('#dsheet').classList.remove('is-dragging'); applyFrame(); } tdrag = null; });
+  // Mouse wheel / trackpad on Home: scrolling down at rest expands; scrolling up at the top of the list collapses.
+  let wheelUp = 0;
+  appEl.addEventListener('wheel', e => {
+    const sheet = $('#dsheet');
+    if (state.screen !== 'home' || state.overlay || !sheet || !sheet.contains(e.target)) return;
+    const list = sheet.querySelector('[data-scroll="list"]');
+    if (state.homeSheet === 'rest' && e.deltaY > 0) { e.preventDefault(); setHomeSheet('expanded'); return; }
+    if (state.homeSheet === 'expanded' && list && list.scrollTop <= 0 && e.deltaY < 0) {
+      wheelUp += e.deltaY;
+      if (wheelUp < -120) { wheelUp = 0; setHomeSheet('rest'); }
+    } else wheelUp = 0;
+  }, { passive: false });
+  // Keyboard: moving focus into the listings expands the sheet so the focused card is visible.
+  appEl.addEventListener('focusin', e => {
+    if (state.screen === 'home' && state.homeSheet === 'rest' && e.target.closest && e.target.closest('#dsheet [data-scroll="list"]') && e.target.matches(':focus-visible')) setHomeSheet('expanded', { announceIt: false });
+  });
   appEl.addEventListener('pointerup', endDrag);
   appEl.addEventListener('pointercancel', endDrag);
   appEl.addEventListener('click', e => { if (suppressClick) { e.stopPropagation(); e.preventDefault(); } }, true);
@@ -1133,11 +1237,11 @@
 
   function snapshot(fid) {
     const list = $('[data-scroll="list"]'), filters = $('.filters');
-    return { screen: state.screen, view: state.view, pan: { ...state.pan }, selectedListingId: state.selectedListingId, expandedCluster: state.expandedCluster,
+    return { screen: state.screen, view: state.view, homeSheet: state.homeSheet, pan: { ...state.pan }, selectedListingId: state.selectedListingId, expandedCluster: state.expandedCluster,
       listScrollY: list ? list.scrollTop : 0, filterRowScrollX: filters ? filters.scrollLeft : 0, fid };
   }
   function restore(snap) {
-    Object.assign(state, { screen: snap.screen, view: snap.view || 'list', pan: snap.pan || { x: 0, y: 0 }, selectedListingId: snap.selectedListingId, expandedCluster: snap.expandedCluster || null });
+    Object.assign(state, { screen: snap.screen, view: snap.view || 'list', homeSheet: snap.homeSheet || 'rest', pan: snap.pan || { x: 0, y: 0 }, selectedListingId: snap.selectedListingId, expandedCluster: snap.expandedCluster || null });
     if (state.selectedListingId && !shown().some(l => l.id === state.selectedListingId)) state.selectedListingId = null;
     render({ resetScroll: true });
     const list = $('[data-scroll="list"]'), filters = $('.filters');
@@ -1154,7 +1258,7 @@
   }
   function showList(fid) {
     state.screen = listScreen();
-    state.view = 'list';
+    state.view = 'list'; state.homeSheet = 'rest';
     state.selectedListingId = null; state.expandedCluster = null; state.pan = { x: 0, y: 0 };
     request({ fresh: true });
     scrollFiltersTo(hasPrice() ? 'pill-price' : null);
@@ -1391,7 +1495,10 @@
     noop() {},
     'tab-search'() { const list = $('[data-scroll="list"]'); if (list) list.scrollTo({ top: 0, behavior: 'smooth' }); },
     'sheet-close'() { closeOverlay(); },
-    grabber() { actions[state.view === 'map' ? 'map-collapse' : 'map-expand'](); },
+    grabber() {
+      if (state.screen === 'home') { setHomeSheet(state.homeSheet === 'expanded' ? 'rest' : 'expanded'); return; }
+      actions[state.view === 'map' ? 'map-collapse' : 'map-expand']();
+    },
 
     // Category, location, proximity (applied on selection; Close discards)
     'open-category'(el) { openOverlay('category', el); },
@@ -1710,6 +1817,7 @@
     const g = document.activeElement && document.activeElement.classList.contains('grabber-btn');
     if (g && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
       e.preventDefault();
+      if (state.screen === 'home') { setHomeSheet(e.key === 'ArrowUp' ? 'expanded' : 'rest'); focusFid('grabber'); return; }
       if (e.key === 'ArrowUp' && state.view === 'map') actions['map-collapse']();
       if (e.key === 'ArrowDown' && state.view === 'list') actions['map-expand']();
       focusFid('grabber');

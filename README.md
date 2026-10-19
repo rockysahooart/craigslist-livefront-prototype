@@ -17,6 +17,7 @@ A static HTML/CSS/JavaScript prototype of the Craigslist iOS car-shopping redesi
 
 | Date | Version | What changed |
 |---|---|---|
+| 2026-10-19 | *(pending)* | Home sheet: raised starting position measured from the viewport, and gestures. Swiping up anywhere in the sheet, including over search, expands it instead of opening search. Expanded, the list scrolls natively; pulling down at the top collapses it. |
 | 2026-10-19 | `cd5af24` | Interactive map: Leaflet with OpenStreetMap tiles, a geographic proximity circle, pan, pinch and button zoom, Reset map, and markers at their coordinates. Minneapolis and 25 miles as the default search area. Returning-to-a-car-search concept: save search, alerts, Continue your search, and new-match and price-drop example notifications. README rewritten for the current build. |
 | 2026-10-19 | `2517634` | Network simulation with one request lifecycle: Slow, and Fail once then Retry works. Vehicle photos replaced with AI-generated everyday-listing photos. L10–L13 got photos, and L01 shows Photo 1 of 1. |
 | 2026-10-19 | `bede9be` | Shorter desktop prototype notes. |
@@ -57,6 +58,14 @@ Open <http://localhost:8000>. Any static file server works. It uses relative pat
 
 **Discovery journey.**
 - **Home:** the map shows the proximity circle only, with no markers.
+- **Home sheet position:** the sheet starts raised, so the search field, the toolbar and one complete listing row sit above the bottom navigation. The position is measured from the rendered layout, so it adapts to the viewport. It's never lower than the Figma position, and never so high that the map and circle disappear.
+- **Home sheet gestures:**
+  - An upward swipe anywhere in the sheet, including over the search field or a card, expands it. It doesn't open search or focus anything.
+  - Once expanded, the listings scroll normally. Pulling down collapses the sheet only when the list is at the top.
+  - A deliberate tap on the search field opens search. A drag cancels any card or button activation.
+  - The grabber is a button: tap, Enter or Space toggles it, and ArrowUp/ArrowDown expand or collapse it.
+  - On desktop, a mouse drag or the wheel does the same.
+  - The exposed map still pans and zooms.
 - **Search:** the search field has recent searches and the "cars" shortcut.
 - **Category browsing:** each for-sale category works on the sample data.
 - **Results:** a two-state results sheet. Drag the grabber or header, tap the grabber, or use Expand map / Collapse map.
@@ -194,6 +203,7 @@ Automated runs use headless Chrome with real taps, clicks, drags and typing. Eac
 | Suite | Covers |
 |---|---|
 | Interactive map and default location | Fresh-load Minneapolis/25 and no geolocation. One map instance. Pan, zoom buttons and Reset map. The circle's centre and geographic radius. Location and radius changes. Markers = results. Marker → preview → details → back with the view kept. Sheet drag vs list scroll vs map. Attribution, and tile failure |
+| Home sheet | Rest position (toolbar and one full row above the navigation on a 430 × 932 phone; the row's top on a 375 × 667 phone). Three swipes up from mid-screen and three from the search field, all expanding without opening search or focusing an input. Deliberate tap opens search. Short drags spring back. List scrolling once expanded. Pull-down collapse only at the top. Card taps after scrolling, and no card opens from a scroll. Grabber tap and keys. Desktop drag and wheel. Map pan at rest. Run at 430 × 932 and 375 × 667 (touch) and desktop |
 | Filters | Every filter, boundaries, validation, drafts, counts, sort, proximity, recovery |
 | Panels | Location, Proximity, Sort and Filters: open, edit, apply, cancel, reopen, focus, layout |
 | Network | Slow (with a change mid-request), Fail once and Retry, the late-response guard |
@@ -219,7 +229,8 @@ On 2026-10-19, against the live site at `34a17de`, every suite passed: map 86, f
 - **Notifications:** in-app examples only. There's no background monitoring, push or email.
 - **Saved searches:** only one appears on Home, and there's no Saved searches list.
 - **Photos:** one per listing. AI-generated sample images, not real vehicles.
-- **Not tested on a real iPhone.**
+- **Small phones:** at 375 × 667, keeping the map and circle visible leaves room for only the top of the first listing row at rest. The toolbar is fully visible, and the zoom and Reset map controls move into one row.
+- **Not tested on a real iPhone.** The gesture checks use Chrome's synthesized touch events. Physical thumb testing, iOS Safari's own scroll and rubber-band behaviour, and the on-screen keyboard still need a real device.
 
 ## What I would provide to the team
 
