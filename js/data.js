@@ -5,7 +5,8 @@ window.CL_DATA = (function () {
   // minutes: exact posting age, so Newest keeps the drawn orders within the same displayed hour.
   // mapPx: ILLUSTRATIVE neighbourhood positions on the supplied metro map (image pixels), not real addresses.
   // year / make / model: taken from each listing title (sample values). null = the seller didn't state it.
-  // photo: card thumbnail AND details photo 1 (the same image).
+  // photo: card thumbnail, map preview AND details photo (the same image, so the same car everywhere).
+  // Vehicle photos are AI-generated sample images (see assets/img/SOURCES.md). L02 keeps the designed no-photo state.
   const listings = [
     { id: 'L01', title: '2016 VW Golf', year: 2016, make: 'Volkswagen', model: 'Golf', price: 8900, miles: 92000, seller: 'Owner', hours: 1, minutes: 60, area: 'Northeast', category: 'cars-trucks', photo: 'assets/img/L01-gallery-1.jpg', mapPx: [626, 854] },
     { id: 'L02', title: '2019 VW Golf SE', year: 2019, make: 'Volkswagen', model: 'Golf', price: 13900, miles: 41000, seller: 'Dealer', hours: 2, minutes: 110, area: 'Edina', category: 'cars-trucks', photo: null, mapPx: [470, 1040] },
@@ -16,11 +17,11 @@ window.CL_DATA = (function () {
     { id: 'L07', title: '2015 Subaru Outback', year: 2015, make: 'Subaru', model: 'Outback', price: 9800, miles: 104000, seller: 'Owner', hours: 3, minutes: 170, area: 'Richfield', category: 'cars-trucks', photo: 'assets/img/L07-card.jpg', mapPx: [600, 1072] },
     { id: 'L08', title: '2017 Toyota RAV4', year: 2017, make: 'Toyota', model: 'RAV4', price: 14900, miles: 105000, seller: 'Dealer', hours: 4, minutes: 220, area: 'Bloomington', category: 'cars-trucks', photo: 'assets/img/L08-card.jpg', mapPx: [580, 1140] },
     { id: 'L09', title: 'Mid-century dresser', year: null, make: null, model: null, price: 240, miles: null, detail: 'Walnut, 6 drawers', seller: null, hours: 2, minutes: 100, area: 'Northeast', category: 'furniture', photo: 'assets/img/L09-card.jpg', mapPx: [652, 818] },
-    // Added fictional listings that exercise filter edge cases (no photos supplied).
-    { id: 'L10', title: '2013 Ford Focus', year: 2013, make: 'Ford', model: 'Focus', price: 5900, miles: null, seller: 'Owner', hours: 5, minutes: 300, area: 'Uptown', category: 'cars-trucks', photo: null, mapPx: [572, 938] },          // mileage not listed
-    { id: 'L11', title: '2016 VW Jetta', year: 2016, make: 'Volkswagen', model: 'Jetta', price: 8400, miles: 100000, seller: 'Dealer', hours: 5, minutes: 320, area: 'Roseville', category: 'cars-trucks', photo: null, mapPx: [772, 796] },     // exactly 100,000 mi
-    { id: 'L12', title: '2012 Honda Accord', year: 2012, make: 'Honda', model: 'Accord', price: 10000, miles: 150000, seller: 'Owner', hours: 6, minutes: 360, area: 'Maple Grove', category: 'cars-trucks', photo: null, mapPx: [395, 770] }, // exactly $10,000
-    { id: 'L13', title: 'Toyota Tacoma pickup', year: null, make: 'Toyota', model: 'Tacoma', price: 11500, miles: 140000, seller: 'Owner', hours: 6, minutes: 380, area: 'Blaine', category: 'cars-trucks', photo: null, mapPx: [640, 632] }     // year not listed
+    // Added fictional listings that exercise filter edge cases.
+    { id: 'L10', title: '2013 Ford Focus', year: 2013, make: 'Ford', model: 'Focus', price: 5900, miles: null, seller: 'Owner', hours: 5, minutes: 300, area: 'Uptown', category: 'cars-trucks', photo: 'assets/img/L10-card.jpg', mapPx: [572, 938] },          // mileage not listed
+    { id: 'L11', title: '2016 VW Jetta', year: 2016, make: 'Volkswagen', model: 'Jetta', price: 8400, miles: 100000, seller: 'Dealer', hours: 5, minutes: 320, area: 'Roseville', category: 'cars-trucks', photo: 'assets/img/L11-card.jpg', mapPx: [772, 796] },     // exactly 100,000 mi
+    { id: 'L12', title: '2012 Honda Accord', year: 2012, make: 'Honda', model: 'Accord', price: 10000, miles: 150000, seller: 'Owner', hours: 6, minutes: 360, area: 'Maple Grove', category: 'cars-trucks', photo: 'assets/img/L12-card.jpg', mapPx: [395, 770] }, // exactly $10,000
+    { id: 'L13', title: 'Toyota Tacoma pickup', year: null, make: 'Toyota', model: 'Tacoma', price: 11500, miles: 140000, seller: 'Owner', hours: 6, minutes: 380, area: 'Blaine', category: 'cars-trucks', photo: 'assets/img/L13-card.jpg', mapPx: [640, 632] }     // year not listed
   ];
   listings.forEach(l => { if (!l.detail) l.detail = l.miles != null ? `${l.miles.toLocaleString('en-US')} miles` : 'Mileage not listed'; });
 
@@ -29,9 +30,9 @@ window.CL_DATA = (function () {
   const details = {
     L01: {
       title: '2016 Volkswagen Golf',
-      photoCount: 6, // designed "Photo 1 of 6"; only photo 1 exists
+      // Figma designed "Photo 1 of 6"; only one consistent view of this car exists, so the count is 1.
       facts: { Mileage: '92,000 miles', Condition: 'Good', Transmission: 'Automatic', Fuel: 'Gas', 'Title status': 'Clean', 'Body type': 'Hatchback' },
-      description: "Daily driver, always garaged in winter. Recent oil change and new front brake pads in August. Two keys and the owner's manual included. Small scratch on the rear bumper (photo 5). Non-smoking owner. Message me with questions or to arrange a time to see it.",
+      description: "Daily driver, always garaged in winter. Recent oil change and new front brake pads in August. Two keys and the owner's manual included. Small scratch on the rear bumper. Non-smoking owner. Message me with questions or to arrange a time to see it.",
       pickupMap: true
     },
     L02: { title: '2019 Volkswagen Golf SE', facts: { Mileage: '41,000 miles' }, description: '2019 Golf SE for sale. Message for details.' }

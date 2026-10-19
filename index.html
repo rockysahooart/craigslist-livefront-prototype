@@ -19,20 +19,23 @@
     <aside class="notes" aria-label="Reviewer notes">
       <h1>Prototype notes</h1>
       <ul>
-        <li><strong>Sample data.</strong> Listings and sellers are fictional.</li>
+        <li><strong>Sample data.</strong> Listings and sellers are fictional. Vehicle photos are AI-generated sample images.</li>
         <li><strong>Map.</strong> Static image; locations are illustrative, distances straight-line.</li>
         <li><strong>Not in Figma.</strong> Year, make/model, location and distance controls.</li>
         <li><strong>Unavailable.</strong> Favorites, Post, Account, Chat, Save search, Contact seller.</li>
       </ul>
-      <h2 class="notes-h2">Simulate</h2>
-      <label for="sim-network">Network when applying a price</label>
-      <select id="sim-network">
-        <option value="normal">Normal</option>
-        <option value="slow">Slow (3 s)</option>
-        <option value="fail">Fail once, then Retry works</option>
-      </select>
-      <label class="check"><input type="checkbox" id="sim-removed"> 2016 VW Golf removed by its seller</label>
-      <button type="button" id="sim-reset">Restart from Home</button>
+      <section class="sim" aria-labelledby="sim-title">
+        <h2 class="notes-h2" id="sim-title">Simulated network conditions</h2>
+        <p class="sim-note">Demo controls for reviewers. They aren’t part of the app.</p>
+        <div class="sim-scenarios" role="group" aria-label="Network when searching">
+          <button type="button" data-sim-network="normal" aria-pressed="true">Normal</button>
+          <button type="button" data-sim-network="slow" aria-pressed="false">Slow</button>
+          <button type="button" data-sim-network="fail" aria-pressed="false">Fail once, then Retry works</button>
+        </div>
+        <p class="sim-note" id="sim-state" aria-live="polite"></p>
+        <label class="check"><input type="checkbox" id="sim-removed"> 2016 VW Golf removed by its seller</label>
+        <button type="button" id="sim-reset">Restart from Home</button>
+      </section>
     </aside>
     <div class="device" id="device">
       <div class="app" id="app">

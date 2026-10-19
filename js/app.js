@@ -2,7 +2,9 @@
    One store for all screens. Every list, count, map marker, preview and listing navigation reads the same filtered
    set from compute(), which combines the query, location + proximity (real distance from the search centre),
    category, price, seller type and the vehicle filters (year, mileage, make, model) with the sort order.
-   Sheets edit drafts; Apply commits; Close, Cancel or the scrim discards. */
+   Sheets edit drafts; Apply commits; Close, Cancel or the scrim discards.
+   Every search goes through one simulated request lifecycle (loading → slow notice → success | failed, with Retry).
+   Cards, count and markers come from the last successful request; a newer request supersedes older ones. */
 (function () {
   'use strict';
 
@@ -19,15 +21,15 @@
   const liveEl = document.getElementById('live');
   const device = document.getElementById('device');
 
-  // ---------- Reviewer simulation (desktop notes, or URL ?network=slow|fail&removed=L01) ----------
+  // ---------- Simulated network conditions (desktop controls, or URL ?network=slow|fail&removed=L01) ----------
 
   const params = new URLSearchParams(location.search);
   const sim = {
     network: ['slow', 'fail'].includes(params.get('network')) ? params.get('network') : 'normal',
-    removedId: byId[params.get('removed')] ? params.get('removed') : null,
-    failedOnce: false
+    failArmed: params.get('network') === 'fail',   // "Fail once": the next search fails, then Retry works
+    removedId: byId[params.get('removed')] ? params.get('removed') : null
   };
-  const delay = kind => ({ normal: { load: 700, apply: 600 }, slow: { load: 2600, apply: 3000 }, fail: { load: 700, apply: 1200 } }[sim.network][kind]);
+  const TIMING = { response: 650, slowResponse: 6000, slowNotice: 2500 };
 
   // ---------- Local persistence ----------
 
@@ -64,8 +66,8 @@
       returnTo: null,
       searchReturn: null,
       overlay: null,           // { type, focusReturn, rect }
-      loading: true,           // first load: skeleton cards
-      pending: null,           // { price, status } while a new price is applied
+      results: null,           // last successfully loaded search: { crit, key }. Everything on screen comes from it.
+      req: null,               // request in flight or failed: { id, key, crit, status: loading | slow | failed, retry }
       removed: []
     };
   }
@@ -128,12 +130,12 @@
 
   // The single filtered set behind every count, card, marker, preview and listing navigation.
   // Missing values never satisfy a filter on that field: unknown year/mileage/seller are excluded while it's on.
-  function compute({ price = state.price.applied, extras = state.extras.applied, location = state.location, radius = state.radius } = {}) {
-    const x = activeExtras(extras);
-    const q = words(state.query);
+  function compute({ query = state.query, category = state.category, price = state.price.applied, extras = state.extras.applied, location = state.location, radius = state.radius } = {}) {
+    const x = activeExtras(extras, category);
+    const q = words(query);
     const list = D.listings
       .filter(l => !state.removed.includes(l.id))
-      .filter(l => inCategory(l, state.category))
+      .filter(l => inCategory(l, category))
       .filter(l => milesFrom(l, location) <= radius)                                // proximity: real distance
       .filter(l => { const t = words(l.title); return q.every(w => t.some(tw => tw.startsWith(w))); })
       .filter(l => (price.min == null || l.price >= price.min) && (price.max == null || l.price <= price.max)) // inclusive
@@ -151,6 +153,11 @@
     // Equal prices fall back to newest first, then ID, so the order is stable.
     return list.sort((a, b) => by(a, b) || a.minutes - b.minutes || a.id.localeCompare(b.id));
   }
+
+  // The search a request is made for, and the listings on screen (from the last successful request).
+  const criteria = () => ({ query: state.query, category: state.category, location: state.location, radius: state.radius, price: { ...state.price.applied }, extras: { ...activeExtras() } });
+  const critKey = c => JSON.stringify(c);
+  const shown = () => state.results ? compute(state.results.crit) : [];
 
   const listScreen = () => state.query ? 'results' : (state.category === 'all' ? 'home' : 'browse');
   const showsMarkers = () => !!state.query || state.category !== 'all';    // Home: circle only
@@ -204,7 +211,7 @@
   }
   // One horizontally scrolling row. Order: location, proximity, category, price.
   function filtersRow() {
-    const busy = !!state.pending || state.loading;
+    const busy = false;   // the controls stay usable while a search is running
     const pills = [
       pillChange(loc().label, { action: 'open-location', fid: 'pill-location', aria: `Location: ${loc().label} ${loc().zip}. Change location`, disabled: busy }),
       pillChange(`${state.radius} miles`, { action: 'open-radius', fid: 'pill-radius', aria: `Distance: within ${state.radius} miles. Change distance`, disabled: busy }),
@@ -245,7 +252,6 @@
   function filtersBtn() {
     const n = filterCount();
     const label = `${icon('sliders')}<span>Filters${n ? ` (${n})` : ''}</span>`;
-    if (state.pending || state.loading) return `<button type="button" class="quiet" aria-disabled="true" data-action="noop" data-fid="filters-btn">${label}</button>`;
     return `<button type="button" class="quiet" data-action="open-filters" data-fid="filters-btn" aria-haspopup="dialog" aria-label="Filters${n ? `, ${n} active` : ''}">${label}</button>`;
   }
   const saveSearch = () => unavailable('quiet', `${icon('saved-search')}<span>Save search</span>`, 'Save search');
@@ -266,7 +272,7 @@
       <button type="button" class="field-clear" data-action="results-clear" data-fid="results-clear" aria-label="Clear search">${icon('xmark-circle-fill')}</button>
     </div>`;
   }
-  const expandMapAvailable = () => !state.pending && !state.loading;
+  const expandMapAvailable = () => true;
   function expandMapBtn() {
     const inner = `${icon('map')}<span>Expand map</span>`;
     return expandMapAvailable()
@@ -296,31 +302,34 @@
     </div>`;
   }
 
+  // One status area at the top of the results: loading, then (slow) "Taking longer than usual", or the failure.
+  function statusBlock() {
+    const r = state.req;
+    if (!r) return '';
+    if (r.status === 'failed') {
+      return `<div class="net-card is-failed" data-net="failed">
+        <div class="net-head">${icon('alert', 'net-icon')}<h2 class="t-headline" style="margin:0" id="net-title" tabindex="-1">Couldn’t load listings</h2></div>
+        <p class="t-sub c2" style="margin:0">Your search and filters are saved.</p>
+        <button type="button" class="primary-btn net-retry" data-action="request-retry" data-fid="retry-btn">${icon('retry-white')}<span>Retry</span></button>
+      </div>`;
+    }
+    if (r.status === 'slow') {
+      return `<div class="net-card is-slow" data-net="slow">
+        <div class="net-head">${spinner()}<h2 class="t-headline" style="margin:0" id="net-title" tabindex="-1">Taking longer than usual</h2></div>
+        <p class="t-sub c2" style="margin:0">Your search is still running.</p>
+      </div>`;
+    }
+    return `<div class="list-header status-row" data-net="loading"><span class="status-text">${spinner()}<span class="t-sub-e" id="net-title" tabindex="-1">Finding listings…</span></span></div>`;
+  }
   function listBody(list) {
-    const isResults = state.screen === 'results';
-    if (state.loading) {
-      return `<div class="list-header status-row" role="status"><span class="status-text">${spinner()}<span class="t-sub-e">Loading listings…</span></span>${sortBtn(false)}</div>${skeletonGrid()}`;
-    }
-    const prevLabel = `Previous results · ${priceLabel()} · ${plural(list.length, 'listing')}`;
-    if (state.pending && state.pending.status === 'applying') {
-      return `<div class="list-header status-row" role="status"><span class="status-text">${spinner()}<span class="t-sub-e">Applying ${esc(priceLabel(state.pending.price))}…</span></span>${sortBtn(false)}</div>
-        <p class="t-sub c2 prev-label" style="margin:0">${esc(prevLabel)}</p>
-        ${grid(list, ' data-dim="true" inert')}`;
-    }
-    if (state.pending && state.pending.status === 'failed') {
-      const want = priceLabel(state.pending.price);
-      return `<div class="error-card" role="alert">
-          <h2 class="t-headline" style="margin:0">Couldn’t apply ${esc(want)}</h2>
-          <p class="t-sub c2" style="margin:0">Your search is kept. Showing previous results at ${esc(priceLabel())}. Retry applies ${esc(want)} again.</p>
-          <button type="button" class="primary-btn" data-action="retry-apply" data-fid="retry-btn">Retry</button>
-        </div>
-        <div class="list-header"><h2 class="t-sub-e" style="margin:0" id="results-count">${esc(prevLabel)}</h2>${sortBtn(false)}</div>
-        ${grid(list)}`;
-    }
+    const r = state.req;
+    // While waiting: skeletons, never a count. Failed: only the message and Retry.
+    if (r) return statusBlock() + (r.status === 'failed' ? '' : skeletonGrid());
+    if (!state.results) return '';
     if (!list.length) return emptyState();
-    const header = isResults
-      ? `<h2 class="t-headline" style="margin:0" id="results-count">${plural(list.length, 'result')}</h2>`
-      : `<h2 class="t-sub c2" style="margin:0" id="results-count">${plural(list.length, 'listing')} within ${state.radius} miles</h2>`;
+    const header = state.query
+      ? `<h2 class="t-headline" style="margin:0" id="results-count" tabindex="-1">${plural(list.length, 'result')}</h2>`
+      : `<h2 class="t-sub c2" style="margin:0" id="results-count" tabindex="-1">${plural(list.length, 'listing')} within ${state.radius} miles</h2>`;
     return `<div class="list-header">${header}${sortBtn()}</div>${grid(list)}`;
   }
 
@@ -348,7 +357,7 @@
       <span class="marker-capsule">${money(l.price)}</span>${sel ? `<span class="marker-pointer"><img src="assets/map/marker-pointer.svg" alt=""></span>` : ''}</button>`;
   }
   function markers(list) {
-    if (!showsMarkers() || state.loading) return '';
+    if (!showsMarkers() || state.req) return '';   // no markers until results arrive
     return markerGroups(list).map(g => {
       if (g.items.length === 1) return markerHtml(g.items[0].l, g.x, g.y);
       if (state.expandedCluster === g.key || g.items.some(p => p.l.id === state.selectedListingId)) {
@@ -369,11 +378,12 @@
   // ---------- Discovery screen ----------
 
   function screenDiscovery() {
-    const list = compute();
+    const list = shown();
+    const r = state.req;
     const home = state.screen === 'home';
     const results = state.screen === 'results';
     const sel = state.view === 'map' && state.selectedListingId && list.find(l => l.id === state.selectedListingId);
-    const also = !state.pending && !state.loading ? alsoFiltered() : '';
+    const also = alsoFiltered();
     const controls = home
       ? `<div class="sheet-controls is-home" style="align-items:stretch">
           <div class="handle-space"><div class="grabber" aria-hidden="true"></div></div>
@@ -390,7 +400,8 @@
           <div class="sheet-actions">${filtersBtn()}${saveSearch()}</div>
           ${also ? `<p class="also-filtered" style="margin:0">${esc(also)}</p>` : ''}
         </div>`;
-    const summary = state.query ? `${plural(list.length, 'result')} · ${state.query}` : `${plural(list.length, 'listing')} · ${catLabel(state.category)}`;
+    const summary = r ? { loading: 'Finding listings…', slow: 'Taking longer than usual', failed: 'Couldn’t load listings' }[r.status]
+      : state.query ? `${plural(list.length, 'result')} · ${state.query}` : `${plural(list.length, 'listing')} · ${catLabel(state.category)}`;
     const preview = sel ? `<div class="preview" role="group" aria-label="Selected listing">
         <button type="button" class="preview-main" data-action="open-details" data-id="${sel.id}" data-fid="preview-open" aria-label="${esc(sel.title)}, ${money(sel.price)}, ${esc(sel.area)}, approximate location. Open details">
           ${sel.photo ? `<img src="${sel.photo}" alt="">` : `<span class="preview-nophoto">${icon('photo')}</span>`}
@@ -411,7 +422,7 @@
         </div>
         <div class="sheet-full">
           ${controls}
-          <div class="list-scroll" data-scroll="list" ${state.loading || (state.pending && state.pending.status === 'applying') ? 'aria-busy="true"' : ''}>${listBody(list)}</div>
+          <div class="list-scroll" data-scroll="list" ${r && ['loading', 'slow'].includes(r.status) ? 'aria-busy="true"' : ''}>${listBody(list)}</div>
         </div>
       </section>
       ${preview}
@@ -455,12 +466,12 @@
     w.style.top = (f.cy - loc().px[1] * PX).toFixed(2) + 'px';
     w.style.setProperty('--s', f.s);
     w.style.setProperty('--inv', (1 / f.s).toFixed(4));
-    if (f.s !== state.mapScale) { state.mapScale = f.s; const mk = w.querySelector('.markers'); if (mk) mk.innerHTML = markers(compute()); }
+    if (f.s !== state.mapScale) { state.mapScale = f.s; const mk = w.querySelector('.markers'); if (mk) mk.innerHTML = markers(shown()); }
     keepSelectionVisible();
   }
   function keepSelectionVisible() {
     if (state.view !== 'map' || !state.selectedListingId) return;
-    const pt = markerPoint(state.selectedListingId, compute());
+    const pt = markerPoint(state.selectedListingId, shown());
     if (!pt) return;
     const { top, h, bottom } = insets();
     const f = mapFrame(), W = appEl.clientWidth, c = loc().px;
@@ -884,10 +895,11 @@
 
   // ---------- Rendering ----------
 
-  function render({ resetScroll = false } = {}) {
+  function render({ resetScroll = false, overlay = true } = {}) {
     const prevList = $('[data-scroll="list"]'), prevFilters = $('.filters');
     const keep = !resetScroll && isDiscovery() && appEl.dataset.screen && isDiscovery(appEl.dataset.screen);
     const listY = keep && prevList ? prevList.scrollTop : 0, filterX = keep && prevFilters ? prevFilters.scrollLeft : 0;
+    const a = document.activeElement, hadFocus = a && screenEl.contains(a) ? (a.dataset.fid || (a.id ? '#' + a.id : null)) : null;
     if (isDiscovery()) state.mapScale = mapFrame().s;
     screenEl.innerHTML = SCREENS[state.screen]();
     appEl.classList.toggle('on-home', state.screen === 'home');
@@ -898,7 +910,18 @@
       if (list) list.scrollTop = listY;
       if (filters) filters.scrollLeft = filterX;
     } else { delete appEl.dataset.view; }
-    renderOverlay();
+    if (overlay) renderOverlay();
+    return hadFocus;
+  }
+  // Re-draw the results after a network event without touching an open sheet, the search screen or focus.
+  // If the focused control disappeared (e.g. Retry after success), focus moves to the status or results heading.
+  function refresh({ resetScroll = false } = {}) {
+    if (!isDiscovery()) return;
+    const had = render({ resetScroll, overlay: false });
+    if (!had || state.overlay) return;
+    const el = had.startsWith('#') ? $(had) : appEl.querySelector(`[data-fid="${had}"]`);
+    if (el && el.offsetParent !== null && el.getAttribute('aria-disabled') !== 'true') el.focus({ preventScroll: true });
+    else { const h = $('#net-title') || $('#results-count'); if (h) h.focus({ preventScroll: true }); }
   }
   function renderOverlay() {
     const o = state.overlay;
@@ -924,7 +947,7 @@
   }
   function restore(snap) {
     Object.assign(state, { screen: snap.screen, view: snap.view || 'list', pan: snap.pan || { x: 0, y: 0 }, selectedListingId: snap.selectedListingId, expandedCluster: snap.expandedCluster || null });
-    if (state.selectedListingId && !compute().some(l => l.id === state.selectedListingId)) state.selectedListingId = null;
+    if (state.selectedListingId && !shown().some(l => l.id === state.selectedListingId)) state.selectedListingId = null;
     render({ resetScroll: true });
     const list = $('[data-scroll="list"]'), filters = $('.filters');
     if (list) list.scrollTop = snap.listScrollY;
@@ -938,27 +961,65 @@
     const pill = el.closest('.pill');
     filters.scrollLeft = Math.max(0, pill.offsetLeft + pill.offsetWidth + 16 - filters.clientWidth);
   }
-  function firstLoad(after) {
-    state.loading = true;
-    render({ resetScroll: true });
-    setTimeout(() => { state.loading = false; render({ resetScroll: true }); if (after) after(); }, delay('load'));
-  }
-  function showList(fid, { load = false } = {}) {
+  function showList(fid) {
     state.screen = listScreen();
     state.view = 'list';
     state.selectedListingId = null; state.expandedCluster = null; state.pan = { x: 0, y: 0 };
-    const done = () => { scrollFiltersTo(hasPrice() ? 'pill-price' : null); if (!focusFid(fid)) focusFirst(screenEl); };
-    if (load) firstLoad(done); else { render({ resetScroll: true }); done(); }
+    request({ fresh: true });
+    scrollFiltersTo(hasPrice() ? 'pill-price' : null);
+    if (!focusFid(fid)) focusFirst(screenEl);
   }
-  // Re-run after an applied change (filters, sort, location, proximity) on the same screen and view.
+  // After an applied change (filters, location, proximity, price): same screen and view, new request.
   function rerun(focus, { scrollTo } = {}) {
-    if (state.selectedListingId && !compute().some(l => l.id === state.selectedListingId)) state.selectedListingId = null;
     state.expandedCluster = null; state.pan = { x: 0, y: 0 };
-    render({ resetScroll: true });
+    request({ fresh: true });
     if (scrollTo !== undefined) scrollFiltersTo(scrollTo);
     if (!focusFid(focus)) focusFirst(screenEl);
-    const n = compute().length;
-    announce(n ? plural(n, state.query ? 'result' : 'listing') : 'No listings match your search.');
+  }
+
+  // ---------- Simulated request lifecycle ----------
+  // One lifecycle for every search: loading → (slow notice) → success | failed. Retry starts it again.
+  // Starting a request cancels the timers of any older one, and responses check their id, so an older response
+  // can never overwrite a newer search.
+
+  let reqSeq = 0, reqTimers = [];
+  const later = (fn, ms) => { reqTimers.push(setTimeout(fn, ms)); };
+  function cancelRequests() { reqTimers.forEach(clearTimeout); reqTimers = []; }
+  const isCurrent = id => state.req && state.req.id === id;
+  function request({ fresh = false, retry = false } = {}) {
+    const crit = criteria(), key = critKey(crit);
+    cancelRequests();
+    // Nothing to fetch: the results on screen already match (e.g. a change was undone).
+    if (!retry && state.results && state.results.key === key) { state.req = null; refresh({ resetScroll: fresh }); return; }
+    const id = ++reqSeq;
+    state.req = { id, key, crit, status: 'loading', retry };
+    state.selectedListingId = null;
+    refresh({ resetScroll: true });
+    const slow = sim.network === 'slow';
+    if (slow) later(() => {
+      if (!isCurrent(id)) return;
+      state.req.status = 'slow';
+      refresh();
+      announce('Taking longer than usual. Your search is still running.');
+    }, TIMING.slowNotice);
+    later(() => {
+      if (!isCurrent(id)) return;                                  // superseded: ignore
+      if (sim.network === 'fail' && sim.failArmed) { sim.failArmed = false; syncSimControls(); fail(id); return; }
+      succeed(id);
+    }, slow ? TIMING.slowResponse : TIMING.response);
+  }
+  function fail(id) {
+    state.req.status = 'failed';
+    refresh();
+    announce('Couldn’t load listings. Your search and filters are saved.');
+  }
+  function succeed(id) {
+    const r = state.req;
+    state.results = { crit: r.crit, key: r.key };
+    state.req = null;
+    refresh({ resetScroll: true });
+    const n = shown().length;
+    announce((r.retry ? 'Listings updated. ' : '') + (n ? plural(n, state.query ? 'result' : 'listing') : 'No listings match your search.'));
   }
 
   // ---------- Overlays ----------
@@ -987,26 +1048,12 @@
   }
   function dismissOverlay() { state.overlay = null; renderOverlay(); }
 
-  // ---------- Price apply (slow / failed network simulation) ----------
+  // ---------- Price apply ----------
 
   function applyPrice(price, focus = 'pill-price') {
     dismissOverlay();
-    state.pending = { price, status: 'applying' };
-    render();
-    announce(`Applying ${priceLabel(price)}`);
-    setTimeout(() => {
-      if (!state.pending) return;
-      if (sim.network === 'fail' && !sim.failedOnce) {
-        sim.failedOnce = true;
-        state.pending.status = 'failed';
-        render(); focusFid('retry-btn');
-        announce(`Couldn't apply ${priceLabel(price)}. Showing previous results.`);
-        return;
-      }
-      state.price.applied = { ...price }; state.price.draft = { ...price };
-      state.pending = null;
-      rerun(focus, { scrollTo: hasPrice() ? 'pill-price' : null });
-    }, delay('apply'));
+    state.price.applied = { ...price }; state.price.draft = { ...price };
+    rerun(focus, { scrollTo: hasPrice() ? 'pill-price' : null });
   }
 
   // ---------- Search ----------
@@ -1033,7 +1080,7 @@
     if (!query) return false;
     state.searchReturn = null;
     const kw = D.categoryKeywords[query.toLowerCase()];
-    if (kw) { addRecent('Cars', { category: 'all' }); setCategory(kw); state.query = ''; showList('search-field', { load: true }); return true; }
+    if (kw) { addRecent('Cars', { category: 'all' }); setCategory(kw); state.query = ''; showList('search-field'); return true; }
     if (scope) {
       if (scope.category) setCategory(scope.category);
       if (scope.location) state.location = scope.location;
@@ -1042,7 +1089,7 @@
     }
     state.query = query;
     addRecent(query, { category: state.category, ...(state.radius !== 25 ? { radius: state.radius } : {}), ...(state.location !== 'mpls' ? { location: state.location } : {}), ...(hasPrice() ? { price: { ...state.price.applied } } : {}) });
-    showList('search-field', { load: true });
+    showList('search-field');
     return true;
   }
 
@@ -1061,7 +1108,7 @@
       if (id === state.category) { closeOverlay(); return; }
       setCategory(id);
       dismissOverlay();
-      showList('pill-category', { load: true });
+      showList('pill-category');
       announce(catLabel(id));
     },
     'open-location'(el) { openOverlay('location', el); },
@@ -1069,19 +1116,17 @@
     'location-apply'() {
       if (state.draftLocation === state.location) { closeOverlay(); return; }
       state.location = state.draftLocation; dismissOverlay(); rerun('pill-location', { scrollTo: null });
-      announce(`Searching around ${loc().label} ${loc().zip}. ${plural(compute().length, state.query ? 'result' : 'listing')}`);
     },
     'open-radius'(el) { openOverlay('radius', el); },
     'radius-pick'(el) { state.draftRadius = +el.dataset.id; syncRadiusUi(); },
     'radius-apply'() {
       if (state.draftRadius === state.radius) { closeOverlay(); return; }
       state.radius = state.draftRadius; dismissOverlay(); rerun('pill-radius', { scrollTo: null });
-      announce(`Within ${state.radius} miles. ${plural(compute().length, state.query ? 'result' : 'listing')}`);
     },
 
     // Sort
     'open-sort'(el) { openOverlay('sort', el); },
-    'sort-pick'(el) { state.sort = el.dataset.id; dismissOverlay(); rerun('sort-btn'); announce(`Sorted by ${D.sorts.find(s => s.id === state.sort).label}`); },
+    'sort-pick'(el) { state.sort = el.dataset.id; dismissOverlay(); render({ resetScroll: true }); focusFid('sort-btn'); announce(`Sorted by ${D.sorts.find(s => s.id === state.sort).label}`); },
 
     // Search
     'open-search'(el) { openSearch(el.dataset.fid || 'search-field'); },
@@ -1090,11 +1135,11 @@
     'search-recent'(el) {
       const r = recents[+el.dataset.index];
       if (r.query) submitSearch(r.query, r.scope);
-      else { state.searchReturn = null; state.query = ''; setCategory((r.scope && r.scope.category) || 'cars-trucks'); showList('search-field', { load: true }); }
+      else { state.searchReturn = null; state.query = ''; setCategory((r.scope && r.scope.category) || 'cars-trucks'); showList('search-field'); }
     },
     'recents-clear'() { recents = []; store.set('recents-v3', recents); const v = $('#search-input').value; render(); const i = $('#search-input'); i.value = v; syncEntryField(); i.focus(); },
     // Clearing the query keeps category, location, proximity and filters.
-    'results-clear'() { state.query = ''; state.pending = null; showList('search-field'); },
+    'results-clear'() { state.query = ''; showList('search-field'); },
 
     // Price
     'open-price'(el) { openOverlay('price', el); },
@@ -1110,9 +1155,9 @@
       if (JSON.stringify(draft) === JSON.stringify(state.price.applied)) { closeOverlay(); return; }
       applyPrice(draft);
     },
-    'retry-apply'() { applyPrice(state.pending.price, 'retry-btn'); },
+    'request-retry'() { request({ retry: true }); const h = $('#net-title'); if (h) h.focus({ preventScroll: true }); },
     // Price × removes only the price constraint.
-    'price-remove'() { state.price.applied = noPrice(); state.price.draft = noPrice(); state.pending = null; rerun('pill-price', { scrollTo: null }); },
+    'price-remove'() { state.price.applied = noPrice(); state.price.draft = noPrice(); rerun('pill-price', { scrollTo: null }); },
 
     // Filters sheet
     'open-filters'(el) { openOverlay('filters', el); },
@@ -1142,7 +1187,7 @@
     // Details
     'open-details'(el) {
       state.returnTo = snapshot(el.dataset.fid);
-      const ids = compute().map(l => l.id);
+      const ids = shown().map(l => l.id);
       state.details = { id: el.dataset.id, ids: ids.includes(el.dataset.id) ? ids : [el.dataset.id] };
       state.screen = 'details';
       render();
@@ -1360,14 +1405,28 @@
 
   // ---------- Reviewer controls (outside the app) ----------
 
-  const netSel = document.getElementById('sim-network'), remChk = document.getElementById('sim-removed');
-  if (netSel) { netSel.value = sim.network; netSel.addEventListener('change', () => { sim.network = netSel.value; sim.failedOnce = false; }); }
+  // Scenario buttons: choosing one (again) re-arms it, so each scenario can be demonstrated repeatedly.
+  const scenarioBtns = [...document.querySelectorAll('[data-sim-network]')];
+  function syncSimControls() {
+    scenarioBtns.forEach(b => b.setAttribute('aria-pressed', String(b.dataset.simNetwork === sim.network)));
+    const note = document.getElementById('sim-state');
+    if (note) note.textContent = sim.network === 'fail' ? (sim.failArmed ? 'The next search will fail.' : 'Failure used: Retry and later searches work. Choose it again to repeat.')
+      : sim.network === 'slow' ? 'Every search takes 6 seconds.' : '';
+  }
+  scenarioBtns.forEach(b => b.addEventListener('click', () => { sim.network = b.dataset.simNetwork; sim.failArmed = sim.network === 'fail'; syncSimControls(); }));
+  const remChk = document.getElementById('sim-removed');
   if (remChk) { remChk.checked = sim.removedId === 'L01'; remChk.addEventListener('change', () => { sim.removedId = remChk.checked ? 'L01' : null; }); }
   const reset = document.getElementById('sim-reset');
-  if (reset) reset.addEventListener('click', () => { state = initialState(); sim.failedOnce = false; firstLoad(); });
+  if (reset) reset.addEventListener('click', () => { cancelRequests(); state = initialState(); sim.failArmed = sim.network === 'fail'; syncSimControls(); render({ resetScroll: true }); request({ fresh: true }); });
+  syncSimControls();
 
-  window.CL_PROTO = { get state() { return JSON.parse(JSON.stringify(state)); }, ids: () => compute().map(l => l.id), sim, milesFrom: id => milesFrom(byId[id]) };
+  window.CL_PROTO = {
+    get state() { return JSON.parse(JSON.stringify(state)); }, ids: () => shown().map(l => l.id), sim, milesFrom: id => milesFrom(byId[id]),
+    // Test hook: same effect as pressing a scenario button.
+    setNetwork(n) { sim.network = n; sim.failArmed = n === 'fail'; syncSimControls(); }
+  };
 
   fitViewport();
-  firstLoad();
+  render({ resetScroll: true });
+  request({ fresh: true });
 })();

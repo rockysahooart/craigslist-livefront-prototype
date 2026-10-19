@@ -13,6 +13,7 @@
 
 | Date | Version | What changed |
 |---|---|---|
+| 2026-10-19 | *(pending)* | Network simulation with one request lifecycle: Slow (skeletons, then "Taking longer than usual") and Fail once, then Retry works. A newer search always wins. Vehicle photos replaced with AI-generated everyday-listing photos (source record in assets/img/SOURCES.md); L10–L13 now have photos, and L01 shows Photo 1 of 1. |
 | 2026-10-19 | `bede9be` | Shorter desktop prototype notes. |
 | 2026-10-19 | `bfcfbb7` | Location, Proximity, Sort and Filters panels. Location takes a city or ZIP code from the supported list; Proximity previews the radius on a map; both edit a draft until Apply. Sort offers Newest and both price orders. Filters adds price, Cancel and a note for listings missing a detail. Shared focus, scrolling and safe-area behaviour. |
 | 2026-10-19 | `05bb209` | Fully functional filtering. Location and proximity pickers, price range, seller type, vehicle year, mileage, and make and model, all on one shared filter state with sort. Real distance filtering, validation, no-match recovery, and listing navigation over the filtered set. |
@@ -48,8 +49,14 @@ python3 -m http.server 8000
 Open <http://localhost:8000>. It's static files with relative paths, so the existing GitHub Pages setup (`main`, root folder) serves it unchanged.
 
 **Simulating network and data states**
-- **Desktop:** use the controls in the notes panel: Network (Normal · Slow · Fail once) and "2016 VW Golf removed by its seller".
+- **Desktop:** under "Simulated network conditions" beside the phone, choose Normal, Slow, or "Fail once, then Retry works". There's also "2016 VW Golf removed by its seller".
 - **Phone:** add URL parameters: `?network=slow`, `?network=fail`, `?removed=L01`.
+- **One request lifecycle:** every search (first load, search, category, location, distance, price, filters) waits for a simulated response.
+  - **Loading:** skeleton cards and "Finding listings…". No count, "0 results" or markers until the response arrives.
+  - **Slow:** each search takes 6 s. After 2.5 s, "Taking longer than usual · Your search is still running." The results then load on their own.
+  - **Fail once:** the next search shows "Couldn’t load listings · Your search and filters are saved." with Retry. Retry shows loading again, then loads the same search. Choosing the scenario again re-arms it.
+  - **Newer search wins:** starting one cancels the older request, and late responses are ignored.
+  - **Sort:** reorders the loaded results without a new request.
 
 ## Files
 
@@ -114,12 +121,12 @@ An automated run with real taps, clicks and typing walks the spec's full journey
 
 ## Sample data (fictional)
 
-All listings, years, makes, mileage, sellers and coordinates are fictional sample content, not verified seller information. Year, make and model come from each title. Map coordinates and search centres are illustrative points on the supplied metro map.
+All listings, years, makes, mileage, sellers and coordinates are fictional sample content, not verified seller information. Vehicle photos are AI-generated sample images in an everyday listing style: private sellers in driveways and parking lots, dealers on a plain lot. [assets/img/SOURCES.md](assets/img/SOURCES.md) records how each was made. Each listing uses one photo for its card, map preview and details, so L01 shows "Photo 1 of 1" rather than the designed "Photo 1 of 6". Year, make and model come from each title. Map coordinates and search centres are illustrative points on the supplied metro map.
 
 | ID | Listing | Price | Mileage | Seller | Area | Notes |
 |---|---|---|---|---|---|---|
 | L01 | 2016 VW Golf | $8,900 | 92,000 | Owner | Northeast | |
-| L02 | 2019 VW Golf SE | $13,900 | 41,000 | Dealer | Edina | no photo |
+| L02 | 2019 VW Golf SE | $13,900 | 41,000 | Dealer | Edina | no photo (designed state) |
 | L03 | 2015 VW Golf | $7,500 | 112,000 | Owner | St. Paul | |
 | L04 | 2017 VW Golf | $9,600 | 98,000 | Dealer | Richfield | |
 | L05 | 2014 VW Golf | $6,800 | 128,000 | Owner | Bloomington | |
@@ -138,8 +145,8 @@ All are within 25 miles of Minneapolis. "Volkswagen Golf" still gives 5 at Any p
 
 - **Search:** search entry, recent searches, and the "cars" shortcut.
 - **Map:** list/map sheet (drag, tap, keys), markers and clusters, previews.
-- **Details:** Save star, "Photo 1 of 6", "Not provided" facts, filled pickup area. Returning restores the screen, view, selected marker, list and filter-row scroll, and all applied filters.
-- **States:** first-load skeleton, slow and failed price apply with Retry, removed listing.
+- **Details:** Save star, photo counter, "Not provided" facts, filled pickup area. Returning restores the screen, view, selected marker, list and filter-row scroll, and all applied filters.
+- **States:** loading skeletons, slow search, failed search with Retry, removed listing.
 
 ## Unavailable
 
@@ -151,7 +158,9 @@ All are within 25 miles of Minneapolis. "Volkswagen Golf" still gives 5 at Any p
 
 | Suite | Result |
 |---|---|
-| Panel suite (Location, Proximity, Sort, Filters), at 430 × 932 (mobile, touch) and 1440 px desktop | 170 of 170 checks pass |
+| Network suite (Slow; Fail once, then Retry works), at 430 × 932 (mobile, touch) and 1440 px desktop | 78 of 78 checks pass |
+| Image audit (every vehicle photo on its card, map preview and details), same two sizes | 80 of 80 checks pass |
+| Panel suite (Location, Proximity, Sort, Filters), same two sizes | 170 of 170 checks pass |
 | Filter suite, same two sizes | 188 of 188 checks pass |
 | Earlier update-handoff suite | 159 of 173 pass |
 
