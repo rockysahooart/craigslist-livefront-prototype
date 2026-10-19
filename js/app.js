@@ -50,6 +50,8 @@
       category: 'all',
       location: 'mpls',
       radius: 25,
+      draftLocation: 'mpls',   // Location and Proximity sheets edit these until Apply
+      draftRadius: 25,
       sort: 'newest',
       price: { applied: noPrice(), draft: noPrice() },
       extras: { applied: noExtras(), draft: noExtras() },
@@ -86,7 +88,7 @@
   }
   const isCars = (cat = state.category) => cat === 'cars-trucks';
   const scopeLine = () => `${catLabel(state.category)} · ${loc().label} · ${state.radius} miles`;
-  const milesFrom = l => { const c = loc().px; return Math.hypot(l.mapPx[0] - c[0], l.mapPx[1] - c[1]) / D.PX_PER_MILE; };
+  const milesFrom = (l, at = state.location) => { const c = loc(at).px; return Math.hypot(l.mapPx[0] - c[0], l.mapPx[1] - c[1]) / D.PX_PER_MILE; };
 
   const hasPrice = (p = state.price.applied) => p.min != null || p.max != null;
   function priceLabel(p = state.price.applied) {
@@ -126,13 +128,13 @@
 
   // The single filtered set behind every count, card, marker, preview and listing navigation.
   // Missing values never satisfy a filter on that field: unknown year/mileage/seller are excluded while it's on.
-  function compute({ price = state.price.applied, extras = state.extras.applied } = {}) {
+  function compute({ price = state.price.applied, extras = state.extras.applied, location = state.location, radius = state.radius } = {}) {
     const x = activeExtras(extras);
     const q = words(state.query);
     const list = D.listings
       .filter(l => !state.removed.includes(l.id))
       .filter(l => inCategory(l, state.category))
-      .filter(l => milesFrom(l) <= state.radius)                                    // proximity: real distance
+      .filter(l => milesFrom(l, location) <= radius)                                // proximity: real distance
       .filter(l => { const t = words(l.title); return q.every(w => t.some(tw => tw.startsWith(w))); })
       .filter(l => (price.min == null || l.price >= price.min) && (price.max == null || l.price <= price.max)) // inclusive
       .filter(l => !x.seller || l.seller === x.seller)
@@ -143,11 +145,11 @@
       .filter(l => !x.model || l.model === x.model);
     const by = {
       newest: (a, b) => a.minutes - b.minutes,
-      closest: (a, b) => milesFrom(a) - milesFrom(b),
       'price-asc': (a, b) => a.price - b.price,
       'price-desc': (a, b) => b.price - a.price
     }[state.sort];
-    return list.sort((a, b) => by(a, b) || a.id.localeCompare(b.id));
+    // Equal prices fall back to newest first, then ID, so the order is stable.
+    return list.sort((a, b) => by(a, b) || a.minutes - b.minutes || a.id.localeCompare(b.id));
   }
 
   const listScreen = () => state.query ? 'results' : (state.category === 'all' ? 'home' : 'browse');
@@ -640,17 +642,29 @@
 
   // ---------- Sheets and menus ----------
 
-  function sheetFrame(title, body, { cls = 'psheet' } = {}) {
+  // Modal sheet: header (title, Close, grabber), scrolling body, and an optional footer that stays in view
+  // above the keyboard and the home indicator.
+  function sheetFrame(title, body, { cls = 'psheet', footer = '', label } = {}) {
     return `<div class="scrim anim-fade" data-action="sheet-close"></div>
       <div class="${cls} surface-sheet anim-sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-title">
         <div class="psheet-header">
           <h2 class="t-title3" id="sheet-title" style="margin:0">${esc(title)}</h2>
-          <button type="button" class="glass-btn" data-action="sheet-close" aria-label="Close">${icon('xmark-glass')}</button>
+          <button type="button" class="glass-btn" data-action="sheet-close" aria-label="${esc(label || `Close ${title.toLowerCase()} without applying`)}">${icon('xmark-glass')}</button>
           <div class="grabber" aria-hidden="true"></div>
         </div>
         <div class="sheet-body">${body}</div>
+        ${footer ? `<div class="sheet-footer">${footer}</div>` : ''}
       </div>`;
   }
+  // Footer: secondary actions in one row (Clear on the left, Cancel on the right), Apply below.
+  function sheetFooter({ clear, apply, applyDisabled = false }) {
+    return `<div class="footer-row">
+        ${clear ? `<button type="button" class="text-btn" data-action="${clear.action}" ${clear.disabled ? 'disabled' : ''}>${esc(clear.label)}</button>` : '<span></span>'}
+        <button type="button" class="text-btn" data-action="sheet-close">Cancel</button>
+      </div>
+      <button type="button" class="primary-btn" data-action="${apply.action}" data-apply ${applyDisabled ? 'disabled' : ''}>${esc(apply.label)}</button>`;
+  }
+  const showLabel = n => n ? `Show ${plural(n, 'result')}` : 'Show 0 results';
   function crow({ action, id, label, selected, chevron, last, sub, disabled }) {
     const inner = `<span class="crow-label">${esc(label)}${sub ? ` <span class="crow-sub">${esc(sub)}</span>` : ''}</span>${selected ? icon('checkmark', 'ic-check') : ''}${chevron ? icon('chevron', 'ic-chevron') : ''}`;
     const cls = `crow t-body ${selected ? 'is-selected' : ''} ${last ? 'no-sep' : ''}`;
@@ -678,14 +692,78 @@
         </div>
       </div>`;
   }
-  // Location and proximity pickers (not designed in Figma; built from the Category Row pattern).
+  // Location and proximity pickers. Not designed in Figma: built from the Category Row, Price Input, Sheet Surface
+  // and Primary Button components. Both edit a draft; Apply commits it and Cancel/Close/Esc/scrim discard it.
+  const norm = v => v.toLowerCase().replace(/\bsaint\b/g, 'st').replace(/[^a-z0-9]+/g, ' ').trim();
+  function locationMatches(q) {
+    const n = norm(q || '');
+    if (!n) return D.locations;
+    return D.locations.filter(l => norm(l.label).startsWith(n) || norm(l.label).split(' ').some(w => w.startsWith(n)) || l.zip.startsWith(n.replace(/ /g, '')));
+  }
+  function locationHint(q, list) {
+    if (!q.trim()) return `${plural(D.locations.length, 'supported location')}. Type a city or a 5-digit ZIP code to narrow the list.`;
+    if (!list.length) {
+      const zip = /^\d{5}$/.test(q.trim());
+      return `${zip ? `ZIP ${q.trim()}` : `“${q.trim()}”`} isn’t available in this prototype. Try Minneapolis, St. Paul, Edina or Bloomington, or their ZIP codes.`;
+    }
+    return `${plural(list.length, 'match', 'matches')} for “${q.trim()}”.`;
+  }
+  function locationRows(list) {
+    return list.map((l, i) => crow({ action: 'location-pick', id: l.id, label: l.label, sub: l.zip + (l.id === state.location ? ' · current' : ''), selected: l.id === state.draftLocation, last: i === list.length - 1 })).join('');
+  }
   function sheetLocation() {
-    const rows = D.locations.map((l, i) => crow({ action: 'location-pick', id: l.id, label: l.label, sub: l.zip, selected: l.id === state.location, last: i === D.locations.length - 1 })).join('');
-    return sheetFrame('Location', `<p class="t-foot c2" style="margin:0">Listings are searched around this area. Your own location isn’t used. Centres are illustrative points on the sample map.</p><ul class="plain-list list-inset">${rows}</ul>`);
+    const q = state.overlay.locQuery || '', list = locationMatches(q), cur = loc();
+    const changed = state.draftLocation !== state.location;
+    return sheetFrame('Location', `<p class="t-foot c2" id="loc-context" style="margin:0">Search location: <b style="color:var(--label);font-weight:600">${esc(cur.label)} ${esc(cur.zip)}</b>. Listings are found around this point. Your device location isn’t used.</p>
+      <form class="price-field" data-form="location" action="#" novalidate role="search">
+        <label class="t-sub-e c2" for="loc-input">City or ZIP code</label>
+        <div class="money ${q ? 'has-value' : ''}">
+          ${icon('search', 'money-icon')}
+          <input id="loc-input" class="t-body" type="text" autocomplete="off" autocapitalize="words" spellcheck="false" enterkeyhint="search"
+            placeholder="Minneapolis or 55401" value="${esc(q)}" data-loc aria-describedby="loc-hint" aria-controls="loc-list">
+        </div>
+        <button type="submit" hidden tabindex="-1"></button>
+      </form>
+      <p class="t-foot c2" id="loc-hint" role="status" style="margin:-8px 0 0">${esc(locationHint(q, list))}</p>
+      <ul class="plain-list list-inset" id="loc-list" aria-label="Supported locations">${locationRows(list)}</ul>`,
+      { cls: 'psheet is-tall', footer: sheetFooter({ apply: { action: 'location-apply', label: changed ? `Search ${loc(state.draftLocation).label} · ${showLabel(compute({ location: state.draftLocation }).length)}` : 'Done' } }) });
+  }
+
+  // Radius preview: the supplied metro map, centred on the (draft) search centre, zoomed so the whole circle fits.
+  // Dots: the listings the current query, category and filters would show (inside = purple, outside = grey).
+  const MAP_W = 1114 * PX, MAP_H = 1826 * PX, PREVIEW_H = 168;
+  function radiusPreviewModel(radius = state.draftRadius) {
+    const c = loc().px, r = radius * D.PX_PER_MILE * PX;
+    const s = Math.min(1, (PREVIEW_H / 2 - 12) / r);
+    const all = showsMarkers() ? compute({ radius: 1e9 }) : [];
+    const inside = new Set(compute({ radius }).map(l => l.id));
+    return { s, cx: c[0] * PX, cy: c[1] * PX, r, dots: all.map(l => ({ x: l.mapPx[0] * PX, y: l.mapPx[1] * PX, on: inside.has(l.id) })) };
+  }
+  function radiusPreview() {
+    const m = radiusPreviewModel();
+    return `<div class="radius-preview" aria-hidden="true" style="height:${PREVIEW_H}px">
+      <div class="rp-world" style="width:${MAP_W.toFixed(1)}px;height:${MAP_H.toFixed(1)}px;transform:scale(${m.s.toFixed(4)}) translate(${(-m.cx).toFixed(1)}px,${(-m.cy).toFixed(1)}px)">
+        <img src="assets/map/metro-map.png" alt="" class="rp-img">
+        <svg class="rp-svg" width="${MAP_W.toFixed(1)}" height="${MAP_H.toFixed(1)}" viewBox="0 0 ${MAP_W.toFixed(1)} ${MAP_H.toFixed(1)}">
+          ${m.dots.map(d => `<circle class="rp-dot ${d.on ? 'is-on' : ''}" cx="${d.x.toFixed(1)}" cy="${d.y.toFixed(1)}" r="${(4 / m.s).toFixed(1)}"/>`).join('')}
+          <circle class="rp-circle" cx="${m.cx.toFixed(1)}" cy="${m.cy.toFixed(1)}" r="${m.r.toFixed(1)}" vector-effect="non-scaling-stroke"/>
+          <circle class="rp-centre" cx="${m.cx.toFixed(1)}" cy="${m.cy.toFixed(1)}" r="${(6 / m.s).toFixed(1)}" vector-effect="non-scaling-stroke"/>
+        </svg>
+      </div>
+    </div>`;
+  }
+  function radiusCaption(r = state.draftRadius) {
+    const n = compute({ radius: r }).length;
+    return `Preview: ${r} miles around ${loc().label} ${loc().zip} · ${plural(n, state.query ? 'result' : 'listing')} inside`;
   }
   function sheetRadius() {
-    const rows = D.radii.map((r, i) => crow({ action: 'radius-pick', id: String(r), label: `Within ${r} miles`, selected: r === state.radius, last: i === D.radii.length - 1 })).join('');
-    return sheetFrame('Distance', `<p class="t-foot c2" style="margin:0">Straight-line distance from ${esc(loc().label)} ${esc(loc().zip)} to each listing’s approximate (illustrative) location.</p><ul class="plain-list list-inset">${rows}</ul>`);
+    const r = state.draftRadius;
+    const rows = D.radii.map((d, i) => crow({ action: 'radius-pick', id: String(d), label: `Within ${d} miles`, sub: d === state.radius ? 'current' : '', selected: d === r, last: i === D.radii.length - 1 })).join('');
+    return sheetFrame('Distance', `<p class="t-foot c2" style="margin:0">Straight-line distance from the search location, ${esc(loc().label)} ${esc(loc().zip)}, to each listing’s approximate (illustrative) location.</p>
+      ${radiusPreview()}
+      <p class="t-foot c2" id="radius-caption" role="status" style="margin:-8px 0 0">${esc(radiusCaption())}</p>
+      <ul class="plain-list list-inset" id="radius-list" aria-label="Distance options">${rows}</ul>`,
+      { cls: 'psheet is-tall', footer: sheetFooter({ apply: { action: 'radius-apply', label: r !== state.radius ? `Use ${r} miles · ${showLabel(compute({ radius: r }).length)}` : 'Done' } }) });
   }
 
   function numField(key, label, ph, val, { prefix = '$', group = 'price', format = true } = {}) {
@@ -715,11 +793,8 @@
         ${numField('min', 'Minimum', 'No min', p.min)}${numField('max', 'Maximum', 'No max', p.max)}
         <button type="submit" hidden tabindex="-1"></button>
       </form>
-      <p class="t-foot field-error" id="price-error" role="alert" ${err ? '' : 'hidden'}>${esc(err)}</p>
-      <div class="price-actions">
-        <button type="button" class="text-btn" data-action="price-clear" ${hasPrice(p) ? '' : 'disabled'}>Clear price</button>
-        <button type="button" class="primary-btn" data-action="price-apply" ${err ? 'disabled' : ''}>Apply</button>
-      </div>`);
+      <p class="t-foot field-error" id="price-error" role="alert" ${err ? '' : 'hidden'}>${esc(err)}</p>`,
+      { footer: sheetFooter({ clear: { action: 'price-clear', label: 'Clear price', disabled: !hasPrice(p) }, apply: { action: 'price-apply', label: 'Apply' }, applyDisabled: !!err }) });
   }
 
   function segmented(name, label, options, value) {
@@ -740,14 +815,32 @@
       </div>
     </div>`;
   }
-  const draftCount = () => compute({ extras: state.extras.draft }).length;
-  // Filters: price stays on its own pill/sheet; this sheet edits seller type and, in Cars & trucks, vehicle details.
+  const draftCount = () => compute({ price: state.price.draft, extras: state.extras.draft }).length;
+  const draftEmpty = () => !hasPrice(state.price.draft) && JSON.stringify(activeExtras(state.extras.draft)) === JSON.stringify(noExtras());
+  // Listings hidden only because the seller didn't state a detail that a draft filter needs.
+  function missingNote() {
+    const x = activeExtras(state.extras.draft), price = state.price.draft;
+    const field = (on, key, label) => {
+      if (!on) return null;
+      const without = { ...x };
+      if (key === 'year') { without.yearMin = null; without.yearMax = null; } else if (key === 'miles') without.mileage = null; else without.seller = null;
+      const n = compute({ price, extras: without }).filter(l => l[key] == null).length;
+      return n ? `${plural(n, 'listing')} without ${label}` : null;
+    };
+    const parts = [field(!!x.seller, 'seller', 'a seller type'), field(x.yearMin != null || x.yearMax != null, 'year', 'a year'), field(!!x.mileage, 'miles', 'mileage')].filter(Boolean);
+    return parts.length ? `Hidden because the detail isn’t stated: ${parts.join(' · ')}.` : '';
+  }
+  function filtersApplyLabel() {
+    if (priceError(state.price.draft)) return 'Fix the price to apply';
+    if (isCars() && yearError(state.extras.draft)) return 'Fix the year to apply';
+    return showLabel(draftCount());
+  }
+  // Filters: price (also on its own pill), seller type and, in Cars & trucks, vehicle year, mileage, make and model.
+  // Figma (4d) designs seller type and mileage; price, year and make/model reuse the Price Input and Category Row parts.
   function sheetFilters() {
-    const x = state.extras.draft;
+    const x = state.extras.draft, p = state.price.draft;
     const cars = isCars();
-    const yErr = cars ? yearError(x) : '';
-    const n = draftCount();
-    const empty = JSON.stringify(cars ? x : { ...noExtras(), seller: x.seller }) === JSON.stringify(noExtras());
+    const pErr = priceError(p), yErr = cars ? yearError(x) : '';
     const models = x.make ? D.makeModels[x.make] : [];
     const vehicle = cars ? `
         <fieldset class="seg-group"><legend class="t-headline">Vehicle year</legend>
@@ -761,17 +854,19 @@
             ${selectField('model', 'Model', models, x.model, { disabled: !x.make, anyLabel: x.make ? 'Any model' : 'Pick a make' })}
           </div>
         </fieldset>` : `<p class="t-foot c2" style="margin:0">Vehicle year, mileage and make and model are available in Cars &amp; trucks.</p>`;
-    return sheetFrame('Filters', `${contextLine(hasPrice() ? priceLabel() : '')}
+    const note = missingNote();
+    return sheetFrame('Filters', `${contextLine()}
       <form class="filters-form" data-form="filters" action="#" novalidate>
+        <fieldset class="seg-group"><legend class="t-headline">Price</legend>
+          <div class="price-fields">${numField('min', 'Minimum', 'No min', p.min)}${numField('max', 'Maximum', 'No max', p.max)}</div>
+          <p class="t-foot field-error" id="price-error" role="alert" ${pErr ? '' : 'hidden'}>${esc(pErr)}</p>
+        </fieldset>
         ${segmented('seller', 'Seller type', D.sellers, x.seller)}
         ${vehicle}
-        <p class="t-foot c2" style="margin:0">Choose a seller type${cars ? ', year, mileage or make' : ''} to narrow the list. Listings that don’t state that detail are hidden while the filter is on.</p>
+        <p class="t-foot c2" style="margin:0">Listings that don’t state a detail are hidden while a filter on that detail is on.</p>
+        <p class="t-foot missing-note" id="missing-note" ${note ? '' : 'hidden'}>${esc(note)}</p>
         <button type="submit" hidden tabindex="-1"></button>
-      </form>
-      <div class="price-actions">
-        <button type="button" class="text-btn" data-action="filters-clear" ${empty ? 'disabled' : ''}>Clear all</button>
-        <button type="button" class="primary-btn" data-action="filters-apply" data-count ${yErr ? 'disabled' : ''}>${yErr ? 'Fix the year to apply' : `Show ${plural(n, 'result')}`}</button>
-      </div>`, { cls: 'psheet is-tall' });
+      </form>`, { cls: 'psheet is-tall', footer: sheetFooter({ clear: { action: 'filters-clear', label: 'Clear all', disabled: draftEmpty() }, apply: { action: 'filters-apply', label: filtersApplyLabel() }, applyDisabled: !!(pErr || yErr) }) });
   }
 
   function menuSort() {
@@ -870,7 +965,8 @@
 
   function openOverlay(type, trigger) {
     if (type === 'price') state.price.draft = { ...state.price.applied };     // drafts copy applied values
-    if (type === 'filters') state.extras.draft = { ...state.extras.applied };
+    if (type === 'filters') { state.extras.draft = { ...state.extras.applied }; state.price.draft = { ...state.price.applied }; }
+    state.draftLocation = state.location; state.draftRadius = state.radius;
     state.overlay = { type, focusReturn: trigger && trigger.dataset.fid, rect: trigger ? trigger.getBoundingClientRect() : null };
     renderOverlay();
     if (type === 'sort') { trigger.setAttribute('aria-expanded', 'true'); (overlayEl.querySelector('[aria-checked="true"]') || overlayEl.querySelector('.menu-item')).focus(); return; }
@@ -883,6 +979,7 @@
     state.overlay = null;                                   // discard drafts
     state.price.draft = { ...state.price.applied };
     state.extras.draft = { ...state.extras.applied };
+    state.draftLocation = state.location; state.draftRadius = state.radius;
     renderOverlay();
     const t = fid && appEl.querySelector(`[data-fid="${fid}"]`);
     if (t && t.hasAttribute('aria-expanded')) t.setAttribute('aria-expanded', 'false');
@@ -892,7 +989,7 @@
 
   // ---------- Price apply (slow / failed network simulation) ----------
 
-  function applyPrice(price) {
+  function applyPrice(price, focus = 'pill-price') {
     dismissOverlay();
     state.pending = { price, status: 'applying' };
     render();
@@ -908,7 +1005,7 @@
       }
       state.price.applied = { ...price }; state.price.draft = { ...price };
       state.pending = null;
-      rerun('pill-price', { scrollTo: hasPrice() ? 'pill-price' : null });
+      rerun(focus, { scrollTo: hasPrice() ? 'pill-price' : null });
     }, delay('apply'));
   }
 
@@ -968,9 +1065,19 @@
       announce(catLabel(id));
     },
     'open-location'(el) { openOverlay('location', el); },
-    'location-pick'(el) { state.location = el.dataset.id; dismissOverlay(); rerun('pill-location', { scrollTo: null }); },
+    'location-pick'(el) { state.draftLocation = el.dataset.id; syncLocationUi(el.dataset.id); },
+    'location-apply'() {
+      if (state.draftLocation === state.location) { closeOverlay(); return; }
+      state.location = state.draftLocation; dismissOverlay(); rerun('pill-location', { scrollTo: null });
+      announce(`Searching around ${loc().label} ${loc().zip}. ${plural(compute().length, state.query ? 'result' : 'listing')}`);
+    },
     'open-radius'(el) { openOverlay('radius', el); },
-    'radius-pick'(el) { state.radius = +el.dataset.id; dismissOverlay(); rerun('pill-radius', { scrollTo: null }); },
+    'radius-pick'(el) { state.draftRadius = +el.dataset.id; syncRadiusUi(); },
+    'radius-apply'() {
+      if (state.draftRadius === state.radius) { closeOverlay(); return; }
+      state.radius = state.draftRadius; dismissOverlay(); rerun('pill-radius', { scrollTo: null });
+      announce(`Within ${state.radius} miles. ${plural(compute().length, state.query ? 'result' : 'listing')}`);
+    },
 
     // Sort
     'open-sort'(el) { openOverlay('sort', el); },
@@ -1003,26 +1110,34 @@
       if (JSON.stringify(draft) === JSON.stringify(state.price.applied)) { closeOverlay(); return; }
       applyPrice(draft);
     },
-    'retry-apply'() { applyPrice(state.pending.price); },
+    'retry-apply'() { applyPrice(state.pending.price, 'retry-btn'); },
     // Price × removes only the price constraint.
     'price-remove'() { state.price.applied = noPrice(); state.price.draft = noPrice(); state.pending = null; rerun('pill-price', { scrollTo: null }); },
 
     // Filters sheet
     'open-filters'(el) { openOverlay('filters', el); },
     'filters-clear'() {
-      // Resets only this sheet's fields (seller and vehicle details); price, location, category and query stay.
-      state.extras.draft = noExtras();
+      // Resets this sheet's draft (price, seller and vehicle details); location, category and query stay.
+      // Nothing is applied until Apply.
+      state.extras.draft = noExtras(); state.price.draft = noPrice();
       renderOverlay();
       focusFirst(overlayEl.querySelector('form'));
+      announce('Filters cleared. Apply to show the results.');
     },
     'filters-apply'() {
-      const x = state.extras.draft;
-      if (isCars() && yearError(x)) return;
+      const x = state.extras.draft, price = { ...state.price.draft };
+      if (priceError(price) || (isCars() && yearError(x))) return;
       state.extras.applied = { ...x };
+      // A price change goes through the same (simulated) network apply as the price sheet.
+      if (JSON.stringify(price) !== JSON.stringify(state.price.applied)) { applyPrice(price, 'filters-btn'); return; }
       dismissOverlay();
       rerun('filters-btn');
     },
-    'extras-clear-applied'() { state.extras.applied = noExtras(); state.extras.draft = noExtras(); rerun('filters-btn'); },
+    'extras-clear-applied'() {
+      state.extras.applied = noExtras(); state.extras.draft = noExtras();
+      state.price.applied = noPrice(); state.price.draft = noPrice();
+      rerun('filters-btn', { scrollTo: null });
+    },
 
     // Details
     'open-details'(el) {
@@ -1084,19 +1199,44 @@
   function syncPriceUi() {
     const p = state.price.draft, err = priceError(p);
     overlayEl.querySelector('[data-action="price-clear"]').disabled = !hasPrice(p);
-    overlayEl.querySelector('[data-action="price-apply"]').disabled = !!err;
+    overlayEl.querySelector('[data-apply]').disabled = !!err;
     const e = $('#price-error'); e.hidden = !err; e.textContent = err;
   }
   function syncFiltersUi() {
     const x = state.extras.draft, cars = isCars();
     overlayEl.querySelectorAll('.seg').forEach(s => s.classList.toggle('is-on', s.querySelector('input').checked));
-    const err = cars ? yearError(x) : '';
-    const e = $('#extras-error'); if (e) { e.hidden = !err; e.textContent = err; }
-    const btn = overlayEl.querySelector('[data-count]');
-    btn.disabled = !!err;
-    btn.textContent = err ? 'Fix the year to apply' : `Show ${plural(draftCount(), 'result')}`;
-    const empty = JSON.stringify(cars ? x : { ...noExtras(), seller: x.seller }) === JSON.stringify(noExtras());
-    overlayEl.querySelector('[data-action="filters-clear"]').disabled = empty;
+    const pErr = priceError(state.price.draft), yErr = cars ? yearError(x) : '';
+    const pe = $('#price-error'); pe.hidden = !pErr; pe.textContent = pErr;
+    const e = $('#extras-error'); if (e) { e.hidden = !yErr; e.textContent = yErr; }
+    const btn = overlayEl.querySelector('[data-apply]');
+    btn.disabled = !!(pErr || yErr);
+    btn.textContent = filtersApplyLabel();
+    overlayEl.querySelector('[data-action="filters-clear"]').disabled = draftEmpty();
+    const n = $('#missing-note'), note = missingNote(); n.hidden = !note; n.textContent = note;
+  }
+  // Location: filter the supported list as the person types; picks only move the draft checkmark.
+  function syncLocationUi(focusId) {
+    const q = state.overlay.locQuery || '', list = locationMatches(q);
+    $('#loc-list').innerHTML = locationRows(list);
+    $('#loc-hint').textContent = locationHint(q, list);
+    const changed = state.draftLocation !== state.location;
+    $('[data-action="location-apply"]').textContent = changed ? `Search ${loc(state.draftLocation).label} · ${showLabel(compute({ location: state.draftLocation }).length)}` : 'Done';
+    if (focusId) { const b = overlayEl.querySelector(`[data-action="location-pick"][data-id="${focusId}"]`); if (b) b.focus(); announce(`${loc(focusId).label} selected. Apply to search there.`); }
+  }
+  // Proximity: the checkmark, the preview circle and dots, the caption and the Apply label follow the draft radius.
+  function syncRadiusUi() {
+    const r = state.draftRadius, m = radiusPreviewModel(r);
+    overlayEl.querySelectorAll('[data-action="radius-pick"]').forEach(b => {
+      const on = +b.dataset.id === r;
+      b.classList.toggle('is-selected', on); b.setAttribute('aria-current', String(on));
+      const c = b.querySelector('.ic-check'); if (on && !c) b.insertAdjacentHTML('beforeend', icon('checkmark', 'ic-check')); if (!on && c) c.remove();
+    });
+    $('.rp-world').style.transform = `scale(${m.s.toFixed(4)}) translate(${(-m.cx).toFixed(1)}px,${(-m.cy).toFixed(1)}px)`;
+    $('.rp-circle').setAttribute('r', m.r.toFixed(1));
+    $('.rp-centre').setAttribute('r', (6 / m.s).toFixed(1));
+    overlayEl.querySelectorAll('.rp-dot').forEach((d, i) => { d.setAttribute('r', (4 / m.s).toFixed(1)); d.classList.toggle('is-on', m.dots[i].on); });
+    $('#radius-caption').textContent = radiusCaption(r);
+    $('[data-action="radius-apply"]').textContent = r !== state.radius ? `Use ${r} miles · ${showLabel(compute({ radius: r }).length)}` : 'Done';
   }
 
   // ---------- Events ----------
@@ -1114,10 +1254,24 @@
     if (f === 'search') { const i = $('#search-input'); if (!submitSearch(i.value)) i.focus(); }
     else if (f === 'price') actions['price-apply']();
     else if (f === 'filters') actions['filters-apply']();
+    else if (f === 'location') {
+      const list = locationMatches(state.overlay.locQuery);
+      if (list.length === 1) { state.draftLocation = list[0].id; syncLocationUi(list[0].id); }
+      else $('#loc-input').focus();
+    }
   });
   appEl.addEventListener('input', e => {
     const t = e.target;
     if (t.id === 'search-input') { syncEntryField(); return; }
+    if (t.id === 'loc-input') {
+      state.overlay.locQuery = t.value;
+      t.closest('.money').classList.toggle('has-value', !!t.value);
+      // A complete supported ZIP code selects that location (still a draft until Apply).
+      const zip = D.locations.find(l => l.zip === t.value.trim());
+      if (zip) state.draftLocation = zip.id;
+      syncLocationUi();
+      return;
+    }
     if (t.dataset.num) {
       const [group, key] = t.dataset.num.split('.');
       const isYear = group === 'extras';
@@ -1128,7 +1282,7 @@
       target[key] = isYear && val != null && digits.length < 4 ? null : val;
       t.value = val == null ? '' : (isYear ? digits : val.toLocaleString('en-US'));
       t.closest('.money').classList.toggle('has-value', val != null);
-      if (group === 'price') syncPriceUi(); else syncFiltersUi();
+      if (state.overlay && state.overlay.type === 'filters') syncFiltersUi(); else syncPriceUi();
     }
   });
   appEl.addEventListener('change', e => {
@@ -1160,6 +1314,16 @@
       if (e.key === 'ArrowDown' && state.view === 'list') actions['map-expand']();
       focusFid('grabber');
       return;
+    }
+    // Keep Tab inside an open sheet (the results behind it are inert).
+    if (e.key === 'Tab' && o) {
+      const dlg = overlayEl.querySelector('[role="dialog"]');
+      const f = dlg ? [...dlg.querySelectorAll('button:not([tabindex="-1"]):not([disabled]), input:not([disabled]), select:not([disabled])')].filter(el => el.offsetParent !== null && el.getAttribute('aria-disabled') !== 'true') : [];
+      if (f.length) {
+        const i = f.indexOf(document.activeElement);
+        if (e.shiftKey && i <= 0) { e.preventDefault(); f[f.length - 1].focus(); }
+        else if (!e.shiftKey && (i === -1 || i === f.length - 1)) { e.preventDefault(); f[0].focus(); }
+      }
     }
     if (e.key !== 'Escape') return;
     if (o) { e.preventDefault(); closeOverlay(); }

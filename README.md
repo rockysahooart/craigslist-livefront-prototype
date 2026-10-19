@@ -13,6 +13,7 @@
 
 | Date | Version | What changed |
 |---|---|---|
+| 2026-10-19 | *(pending)* | Location, Proximity, Sort and Filters panels. Location takes a city or ZIP code from the supported list; Proximity previews the radius on a map; both edit a draft until Apply. Sort offers Newest and both price orders. Filters adds price, Cancel and a note for listings missing a detail. Shared focus, scrolling and safe-area behaviour. |
 | 2026-10-19 | `05bb209` | Fully functional filtering. Location and proximity pickers, price range, seller type, vehicle year, mileage, and make and model, all on one shared filter state with sort. Real distance filtering, validation, no-match recovery, and listing navigation over the filtered set. |
 | 2026-10-19 | `df98ccd` | Aligned with the prototype update handoff: Filters sheet, edge states (loading, slow, failure, missing data, removed listing), and the Save star. |
 | 2026-10-14 | `2eedfd5` | True-scale search-radius circle on every map state; circle-only Home. |
@@ -73,24 +74,25 @@ An automated run with real taps, clicks and typing walks the spec's full journey
 - seller type
 - and, in Cars & trucks only, vehicle year, mileage, and make and model
 
-…with the sort order (Newest, Closest, price low → high, price high → low).
+…with the sort order (Newest, price low → high, price high → low).
 
 | Control | Where | Behaviour |
 |---|---|---|
-| Location | Pill → sheet | Minneapolis 55401, St. Paul 55102, Edina 55424, Bloomington 55420. Re-centres the map and the circle |
-| Proximity | Pill → sheet | 5, 10, 25, 50 miles. The circle resizes at true scale |
+| Location | Pill → sheet | Shows the current search location (Minneapolis 55401 to start). Type a city or ZIP code to narrow the list of supported centres: Minneapolis 55401, St. Paul 55102, Edina 55424, Bloomington 55420. A full supported ZIP code selects its city; other cities and ZIP codes are explained as unavailable. Apply re-centres the map, circle, list and markers. It never asks for or implies the device's location |
+| Proximity | Pill → sheet | 5, 10, 25, 50 miles. A map preview shows the draft circle around the search centre, with listing dots inside and outside it and the count. Apply resizes the map circle at true scale and updates the list, count and markers together |
+| Sort | Menu button → menu | Newest (posting time), Price: low to high, Price: high to low. The current option has a checkmark; choosing one applies it and closes. Query and filters are unchanged |
 | Category | Pill → picker | All categories, All for sale, and each for-sale category. Sections with subcategories aren't built |
-| Price range | Pill → price sheet | Minimum and maximum, inclusive; min > max is blocked with an inline error. × removes only the price |
+| Price range | Pill → price sheet, and in Filters | Minimum and maximum, inclusive; min > max is blocked with an inline error. × removes only the price |
 | Seller type | Filters | All · Owner · Dealer. Listings with no stated seller are hidden while it's on |
 | Vehicle year | Filters (Cars & trucks) | From/To, inclusive, 1990–2026; out of range or From > To is blocked. Unknown year never matches |
 | Mileage | Filters (Cars & trucks) | Any · Under 100,000 mi (strict: exactly 100,000 doesn't match). Unknown mileage never matches |
 | Make and model | Filters (Cars & trucks) | Make lists the makes in the data. Model is disabled until a make is chosen, and changing make resets an incompatible model |
 
 **Drafts and Apply**
-- Every sheet edits a draft. Apply commits it; Close, Esc or the scrim discards it.
-- The Filters button previews "Show N results" from the draft.
-- Clear all resets only the Filters sheet's fields. Clear price resets only the price draft.
-- Neither touches location, category or query.
+- Location, Proximity, Price and Filters each edit a draft. Apply commits it; Cancel, Close, Esc or the scrim discards it, and the results and their scroll position stay as they were.
+- Apply previews the outcome from the draft ("Search St. Paul · Show 12 results", "Use 10 miles · Show 7 results", "Show N results").
+- Clear all resets the Filters draft (price included). Clear price resets only the price draft. Neither applies anything until Apply, and neither touches location, category or query.
+- Filters names the listings hidden only because a detail isn't stated, for example "1 listing without mileage".
 - Leaving Cars & trucks drops the vehicle-only filters and keeps seller type and price.
 
 **Filters (n)** counts price, seller type, year, mileage, and make/model (make and model together count as one). Location, proximity and category are never counted. An "Also filtered: …" line lists the sheet filters that are on.
@@ -98,6 +100,16 @@ An automated run with real taps, clicks and typing walks the spec's full journey
 **No matches** keeps the query and pills visible, explains why, and offers the paths that apply: Remove price filter, Edit filters (opens the sheet with the applied values), Clear filters, Change distance, or Edit search.
 
 **Home rule:** before a category or query is chosen, the map shows only the proximity circle.
+
+**Panels (shared behaviour)**
+- One panel at a time. On phones the sheets sit on the bottom edge with safe-area spacing; on desktop they stay inside the contained phone.
+- Long sheets scroll, and the Clear/Cancel/Apply footer stays in view, above the keyboard on phones.
+- Focus moves into the panel, Tab stays inside it, the results behind are inert, and focus returns to the trigger. Every field has a label.
+- Location, Proximity and Filters open from Home, browsing and results, in list and map view. Sort opens from the list header.
+
+**Where the panels come from**
+- **From Figma:** the Filters sheet (4d: seller type, mileage, Clear all, Close, Apply), the Price sheet, the Category Row, the Sheet Surface, the Price Input, the Primary and Text Buttons, and the Menu Button.
+- **Extended:** Figma notes that the location and radius pickers and the sort options are not designed. Location (city/ZIP field and supported list), Proximity (map preview), the Sort menu options, the price, year and make/model sections in Filters, and the Cancel button are built from those components.
 
 ## Sample data (fictional)
 
@@ -138,7 +150,8 @@ All are within 25 miles of Minneapolis. "Volkswagen Golf" still gives 5 at Any p
 
 | Suite | Result |
 |---|---|
-| Filter suite, at 430 × 932 (mobile, touch) and 1440 px desktop | 188 of 188 checks pass |
+| Panel suite (Location, Proximity, Sort, Filters), at 430 × 932 (mobile, touch) and 1440 px desktop | 170 of 170 checks pass |
+| Filter suite, same two sizes | 188 of 188 checks pass |
 | Earlier update-handoff suite | 159 of 173 pass |
 
 **Filter suite.** Each case asserts the expected listing IDs computed from the data, not only what the app reports. It covers:
@@ -167,6 +180,7 @@ All are within 25 miles of Minneapolis. "Volkswagen Golf" still gives 5 at Any p
 ## Remaining limitations
 
 - **Controls not in Figma:** vehicle year, make and model, and the location and distance pickers have no designs. They reuse the Price Input, Filter Control, Category Row and segmented-control components and are labelled as added.
+- **Location coverage:** only the four sample centres resolve. There's no geocoding, and the device's location is never used.
 - **Mileage options:** mileage offers only the designed "Under 100,000 mi". There's no free-entry maximum.
 - **Map:** the static image can't be panned or zoomed by hand. Distances are straight lines between illustrative points.
 - **Typed queries:** they search titles; there's no fuzzy matching.

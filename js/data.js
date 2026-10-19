@@ -1,6 +1,6 @@
 /* Sample data. One record per listing, reused on cards, map, previews, details and counts.
    All listings, coordinates and vehicle fields are fictional sample content, not verified seller information.
-   Search is case-insensitive and treats "Volkswagen" as "VW"; Newest = fewest hours; price limits are inclusive. */
+   Search is case-insensitive and treats "Volkswagen" as "VW"; Newest = most recently posted (fewest minutes); price limits are inclusive. */
 window.CL_DATA = (function () {
   // minutes: exact posting age, so Newest keeps the drawn orders within the same displayed hour.
   // mapPx: ILLUSTRATIVE neighbourhood positions on the supplied metro map (image pixels), not real addresses.
@@ -59,7 +59,6 @@ window.CL_DATA = (function () {
 
   const sorts = [
     { id: 'newest', label: 'Newest' },
-    { id: 'closest', label: 'Closest' },
     { id: 'price-asc', label: 'Price: low to high' },
     { id: 'price-desc', label: 'Price: high to low' }
   ];
