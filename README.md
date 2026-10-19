@@ -17,7 +17,7 @@ A static HTML/CSS/JavaScript prototype of the Craigslist iOS car-shopping redesi
 
 | Date | Version | What changed |
 |---|---|---|
-| 2026-10-19 | *(pending)* | Interactive map: Leaflet with OpenStreetMap tiles, a geographic proximity circle, pan, pinch and button zoom, Reset map, and markers at their coordinates. Minneapolis and 25 miles as the default search area. Returning-to-a-car-search concept: save search, alerts, Continue your search, and new-match and price-drop example notifications. README rewritten for the current build. |
+| 2026-10-19 | `cd5af24` | Interactive map: Leaflet with OpenStreetMap tiles, a geographic proximity circle, pan, pinch and button zoom, Reset map, and markers at their coordinates. Minneapolis and 25 miles as the default search area. Returning-to-a-car-search concept: save search, alerts, Continue your search, and new-match and price-drop example notifications. README rewritten for the current build. |
 | 2026-10-19 | `2517634` | Network simulation with one request lifecycle: Slow, and Fail once then Retry works. Vehicle photos replaced with AI-generated everyday-listing photos. L10–L13 got photos, and L01 shows Photo 1 of 1. |
 | 2026-10-19 | `bede9be` | Shorter desktop prototype notes. |
 | 2026-10-19 | `bfcfbb7` | Location, Proximity, Sort and Filters panels with drafts, Cancel and Apply. |
