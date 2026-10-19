@@ -13,7 +13,7 @@
 
 | Date | Version | What changed |
 |---|---|---|
-| 2026-10-19 | *(pending)* | Network simulation with one request lifecycle: Slow (skeletons, then "Taking longer than usual") and Fail once, then Retry works. A newer search always wins. Vehicle photos replaced with AI-generated everyday-listing photos (source record in assets/img/SOURCES.md); L10–L13 now have photos, and L01 shows Photo 1 of 1. |
+| 2026-10-19 | `2517634` | Network simulation with one request lifecycle: Slow (skeletons, then "Taking longer than usual") and Fail once, then Retry works. A newer search always wins. Vehicle photos replaced with AI-generated everyday-listing photos (source record in assets/img/SOURCES.md); L10–L13 now have photos, and L01 shows Photo 1 of 1. |
 | 2026-10-19 | `bede9be` | Shorter desktop prototype notes. |
 | 2026-10-19 | `bfcfbb7` | Location, Proximity, Sort and Filters panels. Location takes a city or ZIP code from the supported list; Proximity previews the radius on a map; both edit a draft until Apply. Sort offers Newest and both price orders. Filters adds price, Cancel and a note for listings missing a detail. Shared focus, scrolling and safe-area behaviour. |
 | 2026-10-19 | `05bb209` | Fully functional filtering. Location and proximity pickers, price range, seller type, vehicle year, mileage, and make and model, all on one shared filter state with sort. Real distance filtering, validation, no-match recovery, and listing navigation over the filtered set. |
