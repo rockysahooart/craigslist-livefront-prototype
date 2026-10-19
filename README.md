@@ -13,7 +13,7 @@
 
 | Date | Version | What changed |
 |---|---|---|
-| 2026-10-19 | *(this commit)* | Fully functional filtering. Location and proximity pickers, price range, seller type, vehicle year, mileage, and make and model, all on one shared filter state with sort. Real distance filtering, validation, no-match recovery, and listing navigation over the filtered set. |
+| 2026-10-19 | `05bb209` | Fully functional filtering. Location and proximity pickers, price range, seller type, vehicle year, mileage, and make and model, all on one shared filter state with sort. Real distance filtering, validation, no-match recovery, and listing navigation over the filtered set. |
 | 2026-10-19 | `df98ccd` | Aligned with the prototype update handoff: Filters sheet, edge states (loading, slow, failure, missing data, removed listing), and the Save star. |
 | 2026-10-14 | `2eedfd5` | True-scale search-radius circle on every map state; circle-only Home. |
 | 2026-10-14 | `6381882` | Draggable results sheet, map previews and clusters. |
